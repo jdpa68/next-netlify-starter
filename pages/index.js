@@ -5,8 +5,16 @@ export default function Home() {
         <span style={{display:'inline-block', padding:'6px 10px', borderRadius:8, background:'#eef2ff', color:'#3730a3', fontWeight:600}}>
           Lancelot • MVP
         </span>
-        <h1 style={{margin:'12px 0 8px'}}>Welcome, PeerQuest Testers</h1>
-        <p>This is a minimal Next.js page deployed on Netlify. We’ll attach secure sign-in and the chat proxy next.</p>
+        <h1 style={{margin:'12px 0 8px'}}>Welcome to the Lancelot MVP</h1>
+<p>
+  This early version of Lancelot has been set up exclusively for PeerQuest testers.
+  Jim Dunn has asked me to remind you that you will not break the system—so feel free to get creative
+  with your questions and test how Lancelot responds.
+</p>
+<p>
+  Your feedback will help us shape Lancelot into the most valuable higher education
+  strategy and enrollment tool on the market.
+</p>
         <h2>Next Steps</h2>
         <ul>
           <li>Add password protection or Firebase Auth for invite-only access.</li>

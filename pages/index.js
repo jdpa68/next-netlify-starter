@@ -15,12 +15,13 @@ export default function Home() {
   Your feedback will help us shape Lancelot into the most valuable higher education
   strategy and enrollment tool on the market.
 </p>
-        <h2>Next Steps</h2>
-        <ul>
-          <li>Add password protection or Firebase Auth for invite-only access.</li>
-          <li>Wire a Netlify Function for OpenAI (keeps your API key server-side).</li>
-          <li>Swap this page for the full app when ready.</li>
-        </ul>
+        <h2>How to Test</h2>
+<ul>
+  <li>Ask Lancelot enrollment and strategy questions — for example, about feasibility studies, program launches, or financial models.</li>
+  <li>Try combining multiple topics in a single question to see how Lancelot connects the dots.</li>
+  <li>Experiment with both simple and complex scenarios — there are no wrong questions.</li>
+  <li>After testing, share your feedback directly with Jim Dunn and the PeerQuest team so we can improve the experience.</li>
+</ul>
         <button onClick={() => alert('Coming soon: secure login + chat proxy')}
                 style={{marginTop:16, padding:'12px 16px', borderRadius:10, background:'#111827', color:'#fff', border:'none'}}>
           Test Button

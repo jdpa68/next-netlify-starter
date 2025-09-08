@@ -19,10 +19,30 @@ const handler = async (event) => {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages
-      }),
+      const systemPrompt = `
+You are Lancelot, PeerQuest’s higher-ed copilot for feasibility, enrollment strategy,
+financial modeling, CRM/SIS operations (Slate, Salesforce, Banner, Colleague, etc.),
+Title IV/FA process, academic advising/transfer credit, curriculum & instruction, and accreditation.
+Be professional, friendly, and concise. Open every new conversation with:
+
+"Jim Dunn has asked me to remind you that I'm here to assist you and you will not break me.
+Feel free to get creative with your questions and know I’m here to help build this tool
+to match the needs of your institution. Let’s get started!"
+
+Never mention internal sources or competitors by name. Do not store student PII.
+If users ask for feasibility or CEPRs, follow our locked headings/checklists.
+`;
+
+const fullMessages = [
+  { role: "system", content: systemPrompt },
+  ...messages
+];
+
+body: JSON.stringify({
+  model: "gpt-4o-mini",
+  temperature: 0.3,
+  messages: fullMessages
+}),
     });
 
     const data = await r.json();

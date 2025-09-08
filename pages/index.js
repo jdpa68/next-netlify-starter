@@ -17,14 +17,14 @@ export default function Home() {
 </p>
         <h2>How to Test</h2>
 <ul>
-  <li>Ask Lancelot enrollment and strategy questions — for example, about feasibility studies, program launches, or financial models.</li>
+  <li>Ask Lancelot enrollment strategy questions, financial aid, academics, campus operations, anything you like — for example, ask about feasibility studies, or program launches, or financial models.</li>
   <li>Try combining multiple topics in a single question to see how Lancelot connects the dots.</li>
   <li>Experiment with both simple and complex scenarios — there are no wrong questions.</li>
   <li>After testing, share your feedback directly with Jim Dunn and the PeerQuest team so we can improve the experience.</li>
 </ul>
         <button onClick={() => alert('Coming soon: secure login + chat proxy')}
                 style={{marginTop:16, padding:'12px 16px', borderRadius:10, background:'#111827', color:'#fff', border:'none'}}>
-          Test Button
+          Launch Lancelot
         </button>
         <p style={{color:'#6b7280', fontSize:14, marginTop:12}}>Internal testing only. No student PII is processed or stored.</p>
       </div>

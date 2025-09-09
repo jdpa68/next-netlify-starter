@@ -1,18 +1,15 @@
 // pages/index.js
 import { useEffect, useState, useRef } from 'react';
-
 export default function Home() {
   const [input, setInput] = useState('');
   const [msgs, setMsgs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [userName, setUserName] = useState('');
   const listRef = useRef(null);
-
   // Load saved name + chat or show welcome
   useEffect(() => {
     const savedName = typeof window !== 'undefined' ? localStorage.getItem('lancelot_name') : null;
     if (savedName) setUserName(savedName);
-
     const savedChat = typeof window !== 'undefined' ? localStorage.getItem('lancelot_chat') : null;
     if (savedChat) {
       try {
@@ -25,7 +22,6 @@ export default function Home() {
     }
     setMsgs([{ role: 'assistant', content: "Hello! I am Lancelot. What projects can I assist you with today?" }]);
   }, []);
-
   // Persist chat + auto-scroll
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -33,18 +29,15 @@ export default function Home() {
     }
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [msgs]);
-
   // Personalized first-turn greeting once we know their name
   useEffect(() => {
     if (!userName) return;
     if (!Array.isArray(msgs) || msgs.length === 0) return;
-
     const first = msgs[0];
     const looksLikeDefaultWelcome =
       first?.role === 'assistant' &&
       typeof first?.content === 'string' &&
       /What projects can I assist you with today\?/i.test(first.content);
-
     if (looksLikeDefaultWelcome) {
       setMsgs([
         {
@@ -54,11 +47,9 @@ export default function Home() {
       ]);
     }
   }, [userName]); // runs when a name is set
-
   // Heuristic for Quick Answer mode (short question ending with "?")
   const lastUserMsg = [...msgs].reverse().find(m => m.role === 'user');
   const likelyQuickQuestion = lastUserMsg && lastUserMsg.content.trim().length <= 120 && /\?\s*$/.test(lastUserMsg.content);
-
   async function send() {
     const prompt = input.trim();
     if (!prompt || loading) return;
@@ -71,7 +62,6 @@ export default function Home() {
       const contextNameMsg = userName
         ? [{ role: 'system', content: `The user's preferred name is ${userName}. Address them by name naturally.` }]
         : [];
-
       const resp = await fetch('/.netlify/functions/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -93,13 +83,11 @@ export default function Home() {
       setLoading(false);
     }
   }
-
   function clearChat() {
     const welcome = { role: 'assistant', content: "Hello! I am Lancelot. What projects can I assist you with today?" };
     setMsgs([welcome]);
     if (typeof window !== 'undefined') localStorage.setItem('lancelot_chat', JSON.stringify([welcome]));
   }
-
   return (
     <main style={{
       fontFamily:'system-ui, Arial',
@@ -138,7 +126,6 @@ export default function Home() {
           </div>
         </div>
       )}
-
       {/* Optional helper: Build a project summary (hidden for quick Qs) */}
       {userName && !likelyQuickQuestion && (
         <div style={{padding:'8px 12px', margin:'0 16px 8px', display:'flex', gap:8, alignItems:'center'}}>
@@ -155,7 +142,6 @@ export default function Home() {
           <span style={{color:'#64748b', fontSize:12}}>Tip: paste your project summary any time, and I’ll work from that.</span>
         </div>
       )}
-
       {/* Messages area */}
       <div ref={listRef}
            style={{flex:1, overflowY:'auto', padding:'16px', marginBottom:96}}>
@@ -180,7 +166,6 @@ export default function Home() {
           </div>
         ))}
       </div>
-
       {/* Fixed input bar */}
       <div style={{
         position:'fixed',

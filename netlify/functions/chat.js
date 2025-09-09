@@ -1,5 +1,3 @@
-// netlify/functions/chat.js
-
 export async function handler(event, context) {
   const headers = {
     "Access-Control-Allow-Origin": "*",
@@ -23,6 +21,20 @@ export async function handler(event, context) {
       };
     }
 
+    // Add Lancelot's personality and role
+    const systemPrompt = {
+      role: "system",
+      content: `You are Lancelot, a higher education strategic advisor and consultant.
+Speak as a team member and partner, not a lecturer.
+Bond with the user by asking their name early, using it naturally, and showing that you own their goals as if they are your own.
+Never be condescending or sycophantic. Instead, be warm, insightful, and pragmatic.
+Your guiding principle: "He who bonds, wins."
+Always clarify the user's real goal before giving detailed answers, and ask smart probing questions to uncover the 'question behind the question.'
+Keep responses clear, professional, and collegial—like a trusted consultant and friend.`
+    };
+
+    const fullMessages = [systemPrompt, ...messages];
+
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -30,15 +42,14 @@ export async function handler(event, context) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",      // use 4o-mini for broad availability
-        temperature: 0.5,
-        messages,
+        model: "gpt-4o-mini",   // Stable, available model
+        temperature: 0.6,
+        messages: fullMessages,
       }),
     });
 
     const data = await r.json();
 
-    // Log to Netlify for debugging
     console.log("OpenAI raw response:", JSON.stringify(data, null, 2));
 
     if (!r.ok) {
@@ -49,7 +60,6 @@ export async function handler(event, context) {
       };
     }
 
-    // Normalize the shape the UI expects
     const text =
       data?.choices?.[0]?.message?.content || "No response from model";
 

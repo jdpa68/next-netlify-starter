@@ -14,45 +14,32 @@ export default function Home() {
     if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [messages]);
 
-  // On first load, get the first assistant message (server will ask for name if we don't have one)
+  // First load → ask (or acknowledge) name once
   useEffect(() => {
     (async () => {
-      if (messages.length === 0) {
-        const r = await fetch("/.netlify/functions/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: [], userName: name || null }),
-        });
-        const data = await r.json().catch(() => ({}));
-        const first =
-          data.reply || data.text || data.message || data.content || "Hello! May I have your name?";
-        setMessages([{ role: "assistant", content: first }]);
+      if (messages.length !== 0) return;
+
+      const cachedName =
+        name || (typeof window !== "undefined" && localStorage.getItem("lancelot_name")) || null;
+
+      const r = await fetch("/.netlify/functions/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [], userName: cachedName }),
+      });
+      const data = await r.json().catch(() => ({}));
+      let first =
+        data.reply || data.text || data.message || data.content || "Hello! May I have your name?";
+
+      // Safety: if server asked for name but we already have it, nudge forward
+      if (cachedName && /may i please have your name\??/i.test(first)) {
+        first = `Thanks, ${cachedName}. What would you like to work on today?`;
       }
+
+      setMessages([{ role: "assistant", content: first }]);
     })();
-  }, []); // once
-
-  function extractName(text) {
-    if (!text) return null;
-    const t = text.trim();
-
-    // “My name is Jim”, “I’m Ana”, “I am Bob”, “This is Kim”, “It’s Joe”
-    const m1 = t.match(
-      /(my name is|i am|i'm|im|this is|it'?s)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i
-    );
-    if (m1) return capitalizeName(m1[2]);
-
-    // Single or double proper-name tokens only (e.g., "Jim", "Ana Lopez")
-    const words = t.split(/\s+/);
-    if (
-      words.length <= 3 &&
-      /^[A-Za-z]+(?:\s+[A-Za-z]+){0,2}$/.test(t) &&
-      !/[?!.]/.test(t) &&
-      !/help|plan|how|what|why|when|where|can|could|please/i.test(t)
-    ) {
-      return capitalizeName(t);
-    }
-    return null;
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once
 
   function capitalizeName(s) {
     return s
@@ -62,27 +49,46 @@ export default function Home() {
       .join(" ");
   }
 
+  function extractName(text) {
+    if (!text) return null;
+    const t = text.trim();
+
+    const m1 = t.match(
+      /(my name is|i am|i'm|im|this is|it'?s)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i
+    );
+    if (m1) return capitalizeName(m1[2]);
+
+    const looksLikeOnlyName =
+      /^[A-Za-z]+(?:\s+[A-Za-z]+){0,2}$/.test(t) &&
+      !/[?!.]/.test(t) &&
+      !/help|plan|how|what|why|when|where|can|could|please/i.test(t);
+
+    if (looksLikeOnlyName) return capitalizeName(t);
+    return null;
+  }
+
   async function sendMessage() {
     const userText = input.trim();
     if (!userText) return;
 
-    // Detect and save name if user sent a name (and nothing else)
+    // Always read the freshest name right before sending
+    const cachedName =
+      name || (typeof window !== "undefined" && localStorage.getItem("lancelot_name")) || "";
+
+    // If user only sent a name and we don't already have one, save and reply locally
     const detected = extractName(userText);
-    if (detected && !name) {
-      setName(detected);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("lancelot_name", detected);
-      }
+    if (detected && !cachedName) {
+      const cased = detected;
+      setName(cased);
+      if (typeof window !== "undefined") localStorage.setItem("lancelot_name", cased);
+
       setMessages((m) => [
         ...m,
         { role: "user", content: userText },
-        {
-          role: "assistant",
-          content: `Nice to meet you, ${detected}! What would you like to work on today?`,
-        },
+        { role: "assistant", content: `Nice to meet you, ${cased}! What would you like to work on today?` },
       ]);
       setInput("");
-      return; // don’t call server for a pure-name turn
+      return; // No server call needed for pure-name turn
     }
 
     const newMsgs = [...messages, { role: "user", content: userText }];
@@ -94,22 +100,26 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: newMsgs,
-        userName: name || detected || null,
+        userName: cachedName || detected || null,
       }),
     });
 
     const data = await r.json().catch(() => ({}));
-    const reply =
+    let reply =
       data.reply || data.text || data.message || data.content || "No response from model";
+
+    // Safety: if server asks name but we already have one, convert to a progress reply
+    if ((cachedName || detected) && /may i please have your name\??/i.test(reply)) {
+      const used = cachedName || detected;
+      reply = `Thanks, ${used}. What would you like to work on today?`;
+    }
 
     setMessages((m) => [...m, { role: "assistant", content: reply }]);
 
-    // If the user included their name inside a longer message and we caught it, save it post-reply
-    if (!name && detected) {
+    // If they tucked a name inside a longer message, persist it post-reply
+    if (!cachedName && detected) {
       setName(detected);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("lancelot_name", detected);
-      }
+      if (typeof window !== "undefined") localStorage.setItem("lancelot_name", detected);
     }
   }
 

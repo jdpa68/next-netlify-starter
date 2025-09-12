@@ -1,5 +1,5 @@
 // /netlify/functions/chat.js
-// Lancelot: bonding-first greeting + name handling
+// Lancelot — greeting + name handling + Supabase context + OpenAI call (with debug errors)
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -8,9 +8,10 @@ const CORS = {
   "Content-Type": "application/json",
 };
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;          // optional for Phase 2 KB lookups
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+// env
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
 // ---------- helpers ----------
 function getUserText(messages) {
@@ -22,38 +23,40 @@ function getUserText(messages) {
 }
 
 function extractName(text = "") {
-  // catches: "My name is Sam", "I'm Sam", "I am Sam", "Sam."
   const m1 = text.match(/\bmy name is\s+([A-Za-z][\w'-]*)/i);
   if (m1) return m1[1];
   const m2 = text.match(/\b(i am|i'm)\s+([A-Za-z][\w'-]*)/i);
   if (m2) return m2[2];
-  // single word only + punctuation
   const m3 = text.trim().match(/^([A-Za-z][\w'-]*)[.!?]?\s*$/);
   return m3 ? m3[1] : null;
 }
 
 async function fetchKBMatches(query, limit = 5) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
-  const q = (query || "").trim();
-  if (!q) return [];
-  const star = `*${q.replace(/\s+/g, " ")}*`;
-  const enc = encodeURIComponent(star);
-  const url =
-    `${SUPABASE_URL}/rest/v1/knowledge_base` +
-    `?select=title,content,tags` +
-    `&or=(title.ilike.${enc},content.ilike.${enc},tags.ilike.${enc})` +
-    `&order=created_at.desc&limit=${limit}`;
+  try {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
+    const q = (query || "").trim();
+    if (!q) return [];
+    const star = `*${q.replace(/\s+/g, " ")}*`;
+    const enc = encodeURIComponent(star);
+    const url =
+      `${SUPABASE_URL}/rest/v1/knowledge_base` +
+      `?select=title,content,tags` +
+      `&or=(title.ilike.${enc},content.ilike.${enc},tags.ilike.${enc})` +
+      `&order=created_at.desc&limit=${limit}`;
 
-  const r = await fetch(url, {
-    headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      Accept: "application/json",
-    },
-  });
-  if (!r.ok) return [];
-  const data = await r.json();
-  return Array.isArray(data) ? data : [];
+    const r = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        Accept: "application/json",
+      },
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
 }
 
 function kbBlock(rows) {
@@ -72,13 +75,13 @@ function systemPrompt(name = "there") {
   return [
     `You are Lancelot — a friendly, senior higher-ed advisor and teammate.`,
     `Bond first. Use the user's name ("${name}") when known.`,
-    `Avoid hype and canned praise; be concise, practical, and consultative.`,
+    `Avoid hype or canned praise. Be concise, practical, and consultative.`,
     `Ask the "question behind the question" before prescribing plans.`,
     `He who bonds, wins.`,
   ].join(" ");
 }
 
-// ---------- function ----------
+// ---------- handler ----------
 export async function handler(event) {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: CORS, body: "" };
@@ -88,7 +91,7 @@ export async function handler(event) {
     const { messages = [] } = JSON.parse(event.body || "{}");
     const userText = getUserText(messages).trim();
 
-    // 1) No message yet → always start with your greeting
+    // 1) First contact → ask for name
     if (!messages.length || !userText) {
       return {
         statusCode: 200,
@@ -99,11 +102,10 @@ export async function handler(event) {
       };
     }
 
-    // 2) Name only (no question) → acknowledge & ask how to help
+    // 2) If they only gave a name → acknowledge and ask how to help
     const name = extractName(userText);
     const looksLikeOnlyName =
       !!name &&
-      // very short or exactly "my name is X" / "I'm X" / "I am X"
       (userText.length <= name.length + 15 ||
         /^my name is\s+/i.test(userText) ||
         /^(i am|i'm)\s+/i.test(userText));
@@ -118,24 +120,22 @@ export async function handler(event) {
       };
     }
 
-    // 3) We have a real question → add KB context (if Phase 2 set up)
+    // 3) Pull lightweight context from your Supabase KB (optional)
     const kbRows = await fetchKBMatches(userText, 5);
-    const messagesForModel = [
-      { role: "system", content: systemPrompt(name || "there") },
-      { role: "system", content: "Internal notes:\n" + kbBlock(kbRows) },
-      ...messages,
-    ];
 
-    // Call OpenAI
+    // 4) Call OpenAI
     if (!OPENAI_API_KEY) {
       return {
-        statusCode: 500,
+        statusCode: 200,
         headers: CORS,
-        body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }),
+        body: JSON.stringify({
+          reply:
+            "Server is missing OPENAI_API_KEY. Please add it in Netlify → Environment variables.",
+        }),
       };
     }
 
-    const oi = await fetch("https://api.openai.com/v1/chat/completions", {
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -143,26 +143,43 @@ export async function handler(event) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        messages: messagesForModel,
         temperature: 0.3,
+        messages: [
+          { role: "system", content: systemPrompt(name || "there") },
+          { role: "system", content: "Internal notes:\n" + kbBlock(kbRows) },
+          ...messages,
+        ],
       }),
     });
 
-    const data = await oi.json();
+    if (!openaiRes.ok) {
+      const errTxt = await openaiRes.text().catch(() => "");
+      return {
+        statusCode: 200,
+        headers: CORS,
+        body: JSON.stringify({
+          reply: `OpenAI error: ${openaiRes.status} ${openaiRes.statusText}\n${errTxt}`,
+        }),
+      };
+    }
+
+    const data = await openaiRes.json();
     const reply =
-      data?.choices?.[0]?.message?.content ||
-      "No response from model.";
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "I’m here and listening—could you try that once more?";
 
     return {
       statusCode: 200,
       headers: CORS,
-      body: JSON.stringify({ reply, message: reply, text: reply, content: reply }),
+      body: JSON.stringify({ reply }),
     };
   } catch (err) {
     return {
-      statusCode: 500,
+      statusCode: 200,
       headers: CORS,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({
+        reply: `Server error: ${err?.message || err}`,
+      }),
     };
   }
 }

@@ -1,6 +1,6 @@
 // /netlify/functions/chat.js
 // Lancelot — greeting + name handling + Supabase context + OpenAI call
-// (UI-compatible responses: reply, message, text, content)
+// Returns reply/message/text/content so the UI always shows a bubble.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -10,22 +10,17 @@ const CORS = {
 };
 
 // env
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
+const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || "";
+const SUPABASE_URL     = process.env.SUPABASE_URL     || "";
+const SUPABASE_ANON_KEY= process.env.SUPABASE_ANON_KEY|| "";
 
-// -------- helpers --------
+// ---------- helpers ----------
 function respond(str) {
   const reply = String(str || "").trim();
   return {
     statusCode: 200,
     headers: CORS,
-    body: JSON.stringify({
-      reply,          // our own
-      message: reply, // some UIs read this
-      text: reply,    // some UIs read this
-      content: reply, // some UIs read this
-    }),
+    body: JSON.stringify({ reply, message: reply, text: reply, content: reply }),
   };
 }
 
@@ -37,13 +32,36 @@ function getUserText(messages) {
   return "";
 }
 
+// treat only clear patterns as a name (not plain "hello")
+const STOP_WORDS = new Set(["hello","hi","hey","howdy","yo","hiya","sup","greetings"]);
 function extractName(text = "") {
-  const m1 = text.match(/\bmy name is\s+([A-Za-z][\w'-]*)/i);
+  const t = text.trim();
+
+  // “my name is …”
+  const m1 = t.match(/\bmy name is\s+([A-Za-z][\w'-]{1,30})\b/i);
   if (m1) return m1[1];
-  const m2 = text.match(/\b(i am|i'm)\s+([A-Za-z][\w'-]*)/i);
+
+  // “call me …” or “name: …”
+  const m2 = t.match(/\b(call me|name\s*[:\-])\s*([A-Za-z][\w'-]{1,30})\b/i);
   if (m2) return m2[2];
-  const m3 = text.trim().match(/^([A-Za-z][\w'-]*)[.!?]?\s*$/);
-  return m3 ? m3[1] : null;
+
+  // “I’m … / I am …”
+  const m3 = t.match(/\b(i am|i'm)\s+([A-Za-z][\w'-]{1,30})\b/i);
+  if (m3) return m3[2];
+
+  // single-word fallback ONLY if not a greeting/stop word and starts with capital
+  const single = t.replace(/[.!?]/g, "").trim();
+  if (/^[A-Z][\w'-]{1,30}$/.test(single) && !STOP_WORDS.has(single.toLowerCase())) {
+    return single;
+  }
+  return null;
+}
+
+function isGreetingOnly(text = "") {
+  const t = text.trim().toLowerCase();
+  if (!t) return true;
+  // Simple greetings or very short “hello?”-style messages
+  return STOP_WORDS.has(t.replace(/[!?.,\s]+/g,"")) || t.length <= 6;
 }
 
 async function fetchKBMatches(query, limit = 5) {
@@ -69,34 +87,30 @@ async function fetchKBMatches(query, limit = 5) {
     if (!r.ok) return [];
     const data = await r.json();
     return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 function kbBlock(rows) {
   if (!rows?.length) return "No internal notes matched.";
-  return rows
-    .map((r, i) => {
-      const title = r.title || `Doc ${i + 1}`;
-      const tags = r.tags ? ` [${r.tags}]` : "";
-      const body = (r.content || "").slice(0, 900);
-      return `• ${title}${tags}\n${body}`;
-    })
-    .join("\n\n");
+  return rows.map((r,i) => {
+    const title = r.title || `Doc ${i+1}`;
+    const tags = r.tags ? ` [${r.tags}]` : "";
+    const body = (r.content || "").slice(0, 900);
+    return `• ${title}${tags}\n${body}`;
+  }).join("\n\n");
 }
 
 function systemPrompt(name = "there") {
   return [
     `You are Lancelot — a friendly, senior higher-ed advisor and teammate.`,
     `Bond first. Use the user's name ("${name}") when known.`,
-    `Avoid hype or canned praise. Be concise, practical, and consultative.`,
+    `Avoid hype or canned praise. Be concise, practical, consultative.`,
     `Ask the "question behind the question" before prescribing plans.`,
     `He who bonds, wins.`,
   ].join(" ");
 }
 
-// -------- handler --------
+// ---------- handler ----------
 export async function handler(event) {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: CORS, body: "" };
@@ -106,30 +120,30 @@ export async function handler(event) {
     const { messages = [] } = JSON.parse(event.body || "{}");
     const userText = getUserText(messages).trim();
 
-    // 1) First contact → ask for name
-    if (!messages.length || !userText) {
-      return respond("Hello! How may I assist you? May I please have your name?");
+    // First contact or greeting-only → ask for name
+    if (!messages.length || isGreetingOnly(userText)) {
+      return respond("Hello! I’m Lancelot. What’s your preferred name? (I’ll remember it for this chat.)");
     }
 
-    // 2) Only a name → acknowledge + ask how to help
+    // Name-only → acknowledge + ask how to help
     const name = extractName(userText);
     const looksLikeOnlyName =
       !!name &&
       (userText.length <= name.length + 15 ||
-        /^my name is\s+/i.test(userText) ||
-        /^(i am|i'm)\s+/i.test(userText));
+        /^my name is\b/i.test(userText) ||
+        /^(i am|i'm)\b/i.test(userText) ||
+        /\b(call me|name\s*[:\-])\b/i.test(userText));
+
     if (looksLikeOnlyName) {
       return respond(`Thank you, ${name}. How may I assist you today?`);
     }
 
-    // 3) KB context
+    // KB context
     const kbRows = await fetchKBMatches(userText, 5);
 
-    // 4) OpenAI call
+    // OpenAI call
     if (!OPENAI_API_KEY) {
-      return respond(
-        "Server is missing OPENAI_API_KEY. Please add it in Netlify → Environment variables."
-      );
+      return respond("Server is missing OPENAI_API_KEY. Please add it in Netlify → Environment variables.");
     }
 
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -159,6 +173,7 @@ export async function handler(event) {
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m here and listening—could you try that once more?";
     return respond(reply);
+
   } catch (err) {
     return respond(`Server error: ${err?.message || err}`);
   }

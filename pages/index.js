@@ -5,43 +5,20 @@ export default function Home() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [debug, setDebug] = useState(false);
   const scrollerRef = useRef(null);
 
-  const getName = () => sessionStorage.getItem("lancelot_user_name") || "";
-  const saveName = (n) => sessionStorage.setItem("lancelot_user_name", n);
+  // --- name memory (per session) ---
+  const getName = () => sessionStorage.getItem("lancelot_name") || "";
+  const saveName = (n) => sessionStorage.setItem("lancelot_name", n);
 
-  const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+  // detect ?debug=1
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setDebug(params.get("debug") === "1");
+  }, []);
 
-  // Returns { name, remainder } if the user typed a name + anything else
-  function parseNameAndRemainder(text) {
-    let t = text.trim().replace(/\s+/g, " ");
-    // “my name is dave …”, “it’s dave …”, “i’m dave …”
-    const m = t.match(/\b(?:my name is|i am|i'm|its|it's)\s+([A-Za-z][A-Za-z'--]{1,30})\b/i);
-    if (m) {
-      const name = cap(m[1]);
-      const remainder = t.replace(m[0], "").trim();
-      return { name, remainder };
-    }
-    // Single token that looks like a name
-    if (!t.includes(" ") && /^[A-Za-z][A-Za-z'--]{1,30}$/.test(t)) {
-      return { name: cap(t), remainder: "" };
-    }
-    return { name: "", remainder: t };
-  }
-
-  const add = (role, text) => setMessages((prev) => [...prev, { role, text }]);
-
-  const scrollToBottom = () => {
-    requestAnimationFrame(() => {
-      scrollerRef.current?.scrollTo({
-        top: scrollerRef.current.scrollHeight,
-        behavior: "smooth",
-      });
-    });
-  };
-  useEffect(scrollToBottom, [messages]);
-
-  // Initial greeting
+  // initial greeting
   useEffect(() => {
     if (messages.length === 0) {
       const known = getName();
@@ -54,6 +31,25 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const add = (role, text, meta = {}) => setMessages((prev) => [...prev, { role, text, meta }]);
+
+  const scrollToBottom = () => {
+    requestAnimationFrame(() => {
+      scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
+    });
+  };
+  useEffect(scrollToBottom, [messages]);
+
+  // parse “name + remainder”
+  const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+  function parseNameAndRemainder(text) {
+    let t = text.trim().replace(/\s+/g, " ");
+    const m = t.match(/\b(?:my name is|i am|i'm|its|it's)\s+([A-Za-z][A-Za-z'’-]{1,30})\b/i);
+    if (m) return { name: cap(m[1]), remainder: t.replace(m[0], "").trim() };
+    if (!t.includes(" ") && /^[A-Za-z][A-Za-z'’-]{1,30}$/.test(t)) return { name: cap(t), remainder: "" };
+    return { name: "", remainder: t };
+  }
+
   async function sendMessage() {
     if (!input.trim() || isSending) return;
 
@@ -64,7 +60,7 @@ export default function Home() {
     let name = getName();
     const { name: parsed, remainder } = parseNameAndRemainder(raw);
 
-    // If we don’t know the name yet but the user gave it
+    // capture new name
     if (!name && parsed) {
       name = parsed;
       saveName(name);
@@ -72,17 +68,14 @@ export default function Home() {
         add("assistant", `Nice to meet you, ${name}! What would you like to work on today?`);
         return;
       }
-      // If there IS a remainder (a real question), we continue and send that content below
     }
-
-    // If still no name, ask once and pause
     if (!name) {
       add("assistant", "Thanks! Before we dive in, may I grab your preferred name?");
       return;
     }
 
-    // Choose the content we send to the model:
-    const userContent = remainder || raw;
+    // build minimal history (last 8 turns) to keep payload small
+    const recent = messages.slice(-8).map((m) => ({ role: m.role, content: m.text }));
 
     setIsSending(true);
     try {
@@ -91,18 +84,16 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
-          // Provide a short recent history
-          messages: messages.slice(-10).map((m) => ({ role: m.role, content: m.text })).concat([{ role: "user", content: userContent }]),
+          messages: recent.concat([{ role: "user", content: remainder || raw }]),
         }),
       });
 
+      const data = await res.json();
       if (!res.ok) {
-        const txt = await res.text();
-        add("assistant", `Hmm, I hit an error (${res.status}). Details: ${txt.slice(0, 400)}`);
+        add("assistant", `Error ${res.status}: ${String(data.error || data).slice(0, 400)}`);
       } else {
-        const data = await res.json();
-        const reply = data.reply || data.message || data.text || data.content || "OK.";
-        add("assistant", reply);
+        const reply = data.reply || "OK.";
+        add("assistant", reply, { intent: data.intent || "", kbHits: data.kbHits ?? 0 });
       }
     } catch (e) {
       add("assistant", `Network hiccup: ${String(e).slice(0, 300)}`);
@@ -122,24 +113,24 @@ export default function Home() {
     <div style={{ maxWidth: 820, margin: "32px auto", padding: "0 16px", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial" }}>
       <h1 style={{ marginBottom: 12 }}>Lancelot</h1>
 
-      <div
-        ref={scrollerRef}
-        style={{ height: "56vh", border: "1px solid #e5e7eb", borderRadius: 10, padding: 16, overflowY: "auto", background: "white" }}
-      >
+      <div ref={scrollerRef} style={{ height: "56vh", border: "1px solid #e5e7eb", borderRadius: 10, padding: 16, overflowY: "auto", background: "white" }}>
         {messages.map((m, i) => (
           <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", margin: "10px 0" }}>
-            <div
-              style={{
-                padding: "10px 14px",
-                borderRadius: 12,
-                maxWidth: "80%",
-                lineHeight: 1.4,
-                background: m.role === "user" ? "#2563eb" : "#e5e7eb",
-                color: m.role === "user" ? "white" : "#111827",
-                whiteSpace: "pre-wrap",
-              }}
-            >
+            <div style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              maxWidth: "80%",
+              lineHeight: 1.4,
+              background: m.role === "user" ? "#2563eb" : "#e5e7eb",
+              color: m.role === "user" ? "white" : "#111827",
+              whiteSpace: "pre-wrap"
+            }}>
               {m.text}
+              {debug && m.role === "assistant" && (m.meta?.intent || m.meta?.kbHits >= 0) && (
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
+                  {m.meta?.intent ? `intent:${m.meta.intent}` : ""} {typeof m.meta?.kbHits === "number" ? ` kb:${m.meta.kbHits}` : ""}
+                </div>
+              )}
             </div>
           </div>
         ))}

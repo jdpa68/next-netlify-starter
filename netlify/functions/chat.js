@@ -1,5 +1,5 @@
 // /netlify/functions/chat.js
-// Full version: Supabase-aware + GPT-4o-mini
+// Full version with friendly bonding-first behavior
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -9,12 +9,11 @@ const CORS = {
 };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;          // e.g. https://xxxx.supabase.co
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY; // anon public key for reads
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
 // ---- Helpers ---------------------------------------------------------------
 
-/** Get the latest user message text from an OpenAI-style messages array */
 function getUserQuery(messages) {
   if (!Array.isArray(messages)) return "";
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -23,22 +22,19 @@ function getUserQuery(messages) {
   return "";
 }
 
-/** Simple keyword string -> URL-encoded ilike filter */
-function buildIlikeFilter(q) {
-  // Basic sanitization
-  const cleaned = (q || "").trim().slice(0, 500);
-  const star = `*${cleaned.replace(/\s+/g, " ")}*`;
-  const enc = encodeURIComponent(star);
-  // or=(title.ilike.*q*,content.ilike.*q*,tags.ilike.*q*)
-  return `or=(title.ilike.${enc},content.ilike.${enc},tags.ilike.${enc})`;
+function extractName(text) {
+  const match = text.match(/my name is\s+(\w+)/i);
+  return match ? match[1] : null;
 }
 
-/** Query Supabase REST for relevant rows from knowledge_base */
 async function fetchKBMatches(queryText, limit = 5) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
+  const cleaned = (queryText || "").trim().slice(0, 500);
+  if (!cleaned) return [];
+  const star = `*${cleaned.replace(/\s+/g, " ")}*`;
+  const enc = encodeURIComponent(star);
 
-  const filter = buildIlikeFilter(queryText || "");
-  const url = `${SUPABASE_URL}/rest/v1/knowledge_base?select=title,content,tags&${filter}&order=created_at.desc&limit=${limit}`;
+  const url = `${SUPABASE_URL}/rest/v1/knowledge_base?select=title,content,tags&or=(title.ilike.${enc},content.ilike.${enc},tags.ilike.${enc})&order=created_at.desc&limit=${limit}`;
 
   const resp = await fetch(url, {
     headers: {
@@ -48,34 +44,27 @@ async function fetchKBMatches(queryText, limit = 5) {
     },
   });
 
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    console.error("Supabase error:", resp.status, text);
-    return [];
-  }
+  if (!resp.ok) return [];
   const data = await resp.json();
   return Array.isArray(data) ? data : [];
 }
 
-/** Build system prompt with your bonding-first persona */
 function systemPrompt(name = "there") {
   return [
-    `You are Lancelot — a friendly, senior higher-ed advisor and teammate.`,
-    `Bond first. Use the user's name ("${name}") when known. Ask 1–2 clarifying,`,
-    `goal-focused questions before prescribing. Be concise, specific, and practical.`,
-    `Avoid hype and "as an AI" phrasing. Speak like a consultant and partner.`,
+    `You are Lancelot — a friendly, senior higher-ed advisor.`,
+    `Bond first. Use the user's name ("${name}") when known.`,
+    `Avoid hype. Act like a consultant and teammate.`,
     `He who bonds, wins.`,
   ].join(" ");
 }
 
-/** Turn KB rows into compact context */
 function kbToContext(rows) {
   if (!rows?.length) return "No internal notes matched.";
   return rows
     .map((r, i) => {
       const title = r.title || `Doc ${i + 1}`;
       const tags = r.tags ? ` [${r.tags}]` : "";
-      const body = (r.content || "").slice(0, 1500); // keep it tight
+      const body = (r.content || "").slice(0, 1000);
       return `• ${title}${tags}\n${body}`;
     })
     .join("\n\n");
@@ -97,33 +86,41 @@ export async function handler(event) {
       };
     }
 
-    const { messages = [], userName } = JSON.parse(event.body || "{}");
+    const { messages = [] } = JSON.parse(event.body || "{}");
     const userQuery = getUserQuery(messages);
+    const possibleName = extractName(userQuery);
 
-    // 1) Pull context from Supabase (best-effort; safe to proceed without)
+    // --- Bonding-first logic ---
+    if (!messages.length || !userQuery) {
+      return {
+        statusCode: 200,
+        headers: CORS,
+        body: JSON.stringify({
+          reply: "Hello! How may I assist you? May I please have your name?",
+        }),
+      };
+    }
+
+    if (possibleName && userQuery.toLowerCase().trim() === `my name is ${possibleName.toLowerCase()}`) {
+      return {
+        statusCode: 200,
+        headers: CORS,
+        body: JSON.stringify({
+          reply: `Thank you, ${possibleName}. How may I assist you today?`,
+        }),
+      };
+    }
+
+    // --- If we have a question ---
     const kbRows = await fetchKBMatches(userQuery, 5);
     const kbContext = kbToContext(kbRows);
 
-    // 2) Build the chat for OpenAI
     const chatMessages = [
-      { role: "system", content: systemPrompt(userName || "there") },
-      {
-        role: "system",
-        content:
-          "Internal notes (summarized matches from our knowledge base):\n" +
-          kbContext,
-      },
-      // keep the prior conversation the user sent us (if any)
+      { role: "system", content: systemPrompt(possibleName || "there") },
+      { role: "system", content: "Internal notes:\n" + kbContext },
       ...messages,
-      // gentle nudge to be concrete
-      {
-        role: "system",
-        content:
-          "When giving next steps, provide a short numbered plan, cite which note (by bullet title) informed your advice when relevant, and ask one focused follow-up.",
-      },
     ];
 
-    // 3) Call OpenAI (GPT-4o-mini)
     const aiResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -138,16 +135,6 @@ export async function handler(event) {
     });
 
     const data = await aiResp.json();
-
-    if (data.error) {
-      console.error("OpenAI API Error:", data.error);
-      return {
-        statusCode: 500,
-        headers: CORS,
-        body: JSON.stringify({ error: data.error.message }),
-      };
-    }
-
     const reply = data.choices?.[0]?.message?.content || "No response from model.";
 
     return {
@@ -161,7 +148,6 @@ export async function handler(event) {
       }),
     };
   } catch (err) {
-    console.error("Server error:", err);
     return {
       statusCode: 500,
       headers: CORS,

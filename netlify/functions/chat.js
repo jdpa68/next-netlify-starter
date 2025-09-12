@@ -1,5 +1,5 @@
 // /netlify/functions/chat.js
-// Full version with friendly bonding-first behavior
+// Lancelot: bonding-first greeting + name handling
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -9,12 +9,11 @@ const CORS = {
 };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL;          // optional for Phase 2 KB lookups
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
-// ---- Helpers ---------------------------------------------------------------
-
-function getUserQuery(messages) {
+// ---------- helpers ----------
+function getUserText(messages) {
   if (!Array.isArray(messages)) return "";
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === "user") return String(messages[i].content ?? "");
@@ -22,76 +21,75 @@ function getUserQuery(messages) {
   return "";
 }
 
-function extractName(text) {
-  const match = text.match(/my name is\s+(\w+)/i);
-  return match ? match[1] : null;
+function extractName(text = "") {
+  // catches: "My name is Sam", "I'm Sam", "I am Sam", "Sam."
+  const m1 = text.match(/\bmy name is\s+([A-Za-z][\w'-]*)/i);
+  if (m1) return m1[1];
+  const m2 = text.match(/\b(i am|i'm)\s+([A-Za-z][\w'-]*)/i);
+  if (m2) return m2[2];
+  // single word only + punctuation
+  const m3 = text.trim().match(/^([A-Za-z][\w'-]*)[.!?]?\s*$/);
+  return m3 ? m3[1] : null;
 }
 
-async function fetchKBMatches(queryText, limit = 5) {
+async function fetchKBMatches(query, limit = 5) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
-  const cleaned = (queryText || "").trim().slice(0, 500);
-  if (!cleaned) return [];
-  const star = `*${cleaned.replace(/\s+/g, " ")}*`;
+  const q = (query || "").trim();
+  if (!q) return [];
+  const star = `*${q.replace(/\s+/g, " ")}*`;
   const enc = encodeURIComponent(star);
+  const url =
+    `${SUPABASE_URL}/rest/v1/knowledge_base` +
+    `?select=title,content,tags` +
+    `&or=(title.ilike.${enc},content.ilike.${enc},tags.ilike.${enc})` +
+    `&order=created_at.desc&limit=${limit}`;
 
-  const url = `${SUPABASE_URL}/rest/v1/knowledge_base?select=title,content,tags&or=(title.ilike.${enc},content.ilike.${enc},tags.ilike.${enc})&order=created_at.desc&limit=${limit}`;
-
-  const resp = await fetch(url, {
+  const r = await fetch(url, {
     headers: {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       Accept: "application/json",
     },
   });
-
-  if (!resp.ok) return [];
-  const data = await resp.json();
+  if (!r.ok) return [];
+  const data = await r.json();
   return Array.isArray(data) ? data : [];
 }
 
-function systemPrompt(name = "there") {
-  return [
-    `You are Lancelot — a friendly, senior higher-ed advisor.`,
-    `Bond first. Use the user's name ("${name}") when known.`,
-    `Avoid hype. Act like a consultant and teammate.`,
-    `He who bonds, wins.`,
-  ].join(" ");
-}
-
-function kbToContext(rows) {
+function kbBlock(rows) {
   if (!rows?.length) return "No internal notes matched.";
   return rows
     .map((r, i) => {
       const title = r.title || `Doc ${i + 1}`;
       const tags = r.tags ? ` [${r.tags}]` : "";
-      const body = (r.content || "").slice(0, 1000);
+      const body = (r.content || "").slice(0, 900);
       return `• ${title}${tags}\n${body}`;
     })
     .join("\n\n");
 }
 
-// ---- Netlify handler -------------------------------------------------------
+function systemPrompt(name = "there") {
+  return [
+    `You are Lancelot — a friendly, senior higher-ed advisor and teammate.`,
+    `Bond first. Use the user's name ("${name}") when known.`,
+    `Avoid hype and canned praise; be concise, practical, and consultative.`,
+    `Ask the "question behind the question" before prescribing plans.`,
+    `He who bonds, wins.`,
+  ].join(" ");
+}
 
+// ---------- function ----------
 export async function handler(event) {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: CORS, body: "" };
   }
 
   try {
-    if (!OPENAI_API_KEY) {
-      return {
-        statusCode: 500,
-        headers: CORS,
-        body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }),
-      };
-    }
-
     const { messages = [] } = JSON.parse(event.body || "{}");
-    const userQuery = getUserQuery(messages);
-    const possibleName = extractName(userQuery);
+    const userText = getUserText(messages).trim();
 
-    // --- Bonding-first logic ---
-    if (!messages.length || !userQuery) {
+    // 1) No message yet → always start with your greeting
+    if (!messages.length || !userText) {
       return {
         statusCode: 200,
         headers: CORS,
@@ -101,27 +99,43 @@ export async function handler(event) {
       };
     }
 
-    if (possibleName && userQuery.toLowerCase().trim() === `my name is ${possibleName.toLowerCase()}`) {
+    // 2) Name only (no question) → acknowledge & ask how to help
+    const name = extractName(userText);
+    const looksLikeOnlyName =
+      !!name &&
+      // very short or exactly "my name is X" / "I'm X" / "I am X"
+      (userText.length <= name.length + 15 ||
+        /^my name is\s+/i.test(userText) ||
+        /^(i am|i'm)\s+/i.test(userText));
+
+    if (looksLikeOnlyName) {
       return {
         statusCode: 200,
         headers: CORS,
         body: JSON.stringify({
-          reply: `Thank you, ${possibleName}. How may I assist you today?`,
+          reply: `Thank you, ${name}. How may I assist you today?`,
         }),
       };
     }
 
-    // --- If we have a question ---
-    const kbRows = await fetchKBMatches(userQuery, 5);
-    const kbContext = kbToContext(kbRows);
-
-    const chatMessages = [
-      { role: "system", content: systemPrompt(possibleName || "there") },
-      { role: "system", content: "Internal notes:\n" + kbContext },
+    // 3) We have a real question → add KB context (if Phase 2 set up)
+    const kbRows = await fetchKBMatches(userText, 5);
+    const messagesForModel = [
+      { role: "system", content: systemPrompt(name || "there") },
+      { role: "system", content: "Internal notes:\n" + kbBlock(kbRows) },
       ...messages,
     ];
 
-    const aiResp = await fetch("https://api.openai.com/v1/chat/completions", {
+    // Call OpenAI
+    if (!OPENAI_API_KEY) {
+      return {
+        statusCode: 500,
+        headers: CORS,
+        body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }),
+      };
+    }
+
+    const oi = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -129,23 +143,20 @@ export async function handler(event) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        messages: chatMessages,
+        messages: messagesForModel,
         temperature: 0.3,
       }),
     });
 
-    const data = await aiResp.json();
-    const reply = data.choices?.[0]?.message?.content || "No response from model.";
+    const data = await oi.json();
+    const reply =
+      data?.choices?.[0]?.message?.content ||
+      "No response from model.";
 
     return {
       statusCode: 200,
       headers: CORS,
-      body: JSON.stringify({
-        reply,
-        message: reply,
-        text: reply,
-        content: reply,
-      }),
+      body: JSON.stringify({ reply, message: reply, text: reply, content: reply }),
     };
   } catch (err) {
     return {

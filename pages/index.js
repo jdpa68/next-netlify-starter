@@ -1,24 +1,27 @@
-// pages/index.js
 import { useEffect, useRef, useState } from "react";
 
 export default function Home() {
-  const [messages, setMessages] = useState([]); // no client greeting
-  const [input,   setInput]   = useState("");
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [name, setName] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("lancelot_name") || "";
+  });
   const boxRef = useRef(null);
 
-  // auto-scroll when messages change
+  // Auto-scroll chat
   useEffect(() => {
     if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [messages]);
 
-  // ask the server for the very first assistant message (name prompt)
+  // On first load, get the first assistant message (server will ask for name if we don't have one)
   useEffect(() => {
     (async () => {
       if (messages.length === 0) {
         const r = await fetch("/.netlify/functions/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: [] }),
+          body: JSON.stringify({ messages: [], userName: name || null }),
         });
         const data = await r.json().catch(() => ({}));
         const first =
@@ -26,11 +29,61 @@ export default function Home() {
         setMessages([{ role: "assistant", content: first }]);
       }
     })();
-  }, []); // run once
+  }, []); // once
+
+  function extractName(text) {
+    if (!text) return null;
+    const t = text.trim();
+
+    // “My name is Jim”, “I’m Ana”, “I am Bob”, “This is Kim”, “It’s Joe”
+    const m1 = t.match(
+      /(my name is|i am|i'm|im|this is|it'?s)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i
+    );
+    if (m1) return capitalizeName(m1[2]);
+
+    // Single or double proper-name tokens only (e.g., "Jim", "Ana Lopez")
+    const words = t.split(/\s+/);
+    if (
+      words.length <= 3 &&
+      /^[A-Za-z]+(?:\s+[A-Za-z]+){0,2}$/.test(t) &&
+      !/[?!.]/.test(t) &&
+      !/help|plan|how|what|why|when|where|can|could|please/i.test(t)
+    ) {
+      return capitalizeName(t);
+    }
+    return null;
+  }
+
+  function capitalizeName(s) {
+    return s
+      .trim()
+      .split(/\s+/)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+  }
 
   async function sendMessage() {
     const userText = input.trim();
     if (!userText) return;
+
+    // Detect and save name if user sent a name (and nothing else)
+    const detected = extractName(userText);
+    if (detected && !name) {
+      setName(detected);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("lancelot_name", detected);
+      }
+      setMessages((m) => [
+        ...m,
+        { role: "user", content: userText },
+        {
+          role: "assistant",
+          content: `Nice to meet you, ${detected}! What would you like to work on today?`,
+        },
+      ]);
+      setInput("");
+      return; // don’t call server for a pure-name turn
+    }
 
     const newMsgs = [...messages, { role: "user", content: userText }];
     setMessages(newMsgs);
@@ -39,7 +92,10 @@ export default function Home() {
     const r = await fetch("/.netlify/functions/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: newMsgs }),
+      body: JSON.stringify({
+        messages: newMsgs,
+        userName: name || detected || null,
+      }),
     });
 
     const data = await r.json().catch(() => ({}));
@@ -47,6 +103,14 @@ export default function Home() {
       data.reply || data.text || data.message || data.content || "No response from model";
 
     setMessages((m) => [...m, { role: "assistant", content: reply }]);
+
+    // If the user included their name inside a longer message and we caught it, save it post-reply
+    if (!name && detected) {
+      setName(detected);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("lancelot_name", detected);
+      }
+    }
   }
 
   function onKeyDown(e) {
@@ -90,7 +154,7 @@ const styles = {
   title: { margin: "0 0 16px 0" },
   chatBox: {
     height: 520, overflowY: "auto", padding: 16, borderRadius: 12,
-    border: "1px solid #e6e6e6", background: "#fafafa", boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.00)"
+    border: "1px solid #e6e6e6", background: "#fafafa"
   },
   bubble: {
     display: "inline-block", padding: "10px 12px", borderRadius: 16,

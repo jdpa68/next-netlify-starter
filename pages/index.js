@@ -1,142 +1,104 @@
 // pages/index.js
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export default function Home() {
-  const [msgs, setMsgs] = useState([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState([]); // no client greeting
+  const [input,   setInput]   = useState("");
+  const boxRef = useRef(null);
+
+  // auto-scroll when messages change
+  useEffect(() => {
+    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [messages]);
+
+  // ask the server for the very first assistant message (name prompt)
+  useEffect(() => {
+    (async () => {
+      if (messages.length === 0) {
+        const r = await fetch("/.netlify/functions/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: [] }),
+        });
+        const data = await r.json().catch(() => ({}));
+        const first =
+          data.reply || data.text || data.message || data.content || "Hello! May I have your name?";
+        setMessages([{ role: "assistant", content: first }]);
+      }
+    })();
+  }, []); // run once
 
   async function sendMessage() {
-    if (!input.trim() || loading) return;
+    const userText = input.trim();
+    if (!userText) return;
 
-    const newMsgs = [...msgs, { role: "user", content: input.trim() }];
-    setMsgs(newMsgs);
+    const newMsgs = [...messages, { role: "user", content: userText }];
+    setMessages(newMsgs);
     setInput("");
-    setLoading(true);
 
-    try {
-      const resp = await fetch("/.netlify/functions/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMsgs }),
-      });
+    const r = await fetch("/.netlify/functions/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: newMsgs }),
+    });
 
-      const data = await resp.json();
+    const data = await r.json().catch(() => ({}));
+    const reply =
+      data.reply || data.text || data.message || data.content || "No response from model";
 
-      if (!resp.ok) {
-        const msg =
-          data?.error || data?.error?.message || JSON.stringify(data);
-        setMsgs((m) => [
-          ...m,
-          { role: "assistant", content: `Error: ${msg}` },
-        ]);
-      } else {
-        // Accept either normalized {text} or raw OpenAI shape (fallback)
-        const text =
-          data?.text ||
-          data?.choices?.[0]?.message?.content ||
-          "No response from model";
-        setMsgs((m) => [...m, { role: "assistant", content: text }]);
-      }
-    } catch (err) {
-      setMsgs((m) => [
-        ...m,
-        { role: "assistant", content: `Error: ${String(err)}` },
-      ]);
-    } finally {
-      setLoading(false);
+    setMessages((m) => [...m, { role: "assistant", content: reply }]);
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
     }
   }
 
   return (
-    <div
-      style={{
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica",
-        padding: 20,
-        maxWidth: 720,
-        margin: "0 auto",
-      }}
-    >
-      <h1 style={{ margin: "8px 0 16px" }}>Lancelot</h1>
+    <div style={styles.page}>
+      <h1 style={styles.title}>Lancelot</h1>
 
-      <div
-        style={{
-          border: "1px solid #e5e7eb",
-          borderRadius: 8,
-          padding: 12,
-          height: "60vh",
-          overflowY: "auto",
-          marginBottom: 12,
-          background: "#f9fafb",
-        }}
-      >
-        {msgs.map((m, i) => (
+      <div ref={boxRef} style={styles.chatBox}>
+        {messages.map((m, i) => (
           <div
             key={i}
-            style={{
-              margin: "8px 0",
-              textAlign: m.role === "user" ? "right" : "left",
-            }}
+            style={{ ...styles.bubble, ...(m.role === "user" ? styles.user : styles.assistant) }}
           >
-            <div
-              style={{
-                display: "inline-block",
-                padding: "8px 12px",
-                borderRadius: 12,
-                background: m.role === "user" ? "#2563eb" : "#e5e7eb",
-                color: m.role === "user" ? "white" : "black",
-                maxWidth: "90%",
-                whiteSpace: "pre-wrap",
-                wordWrap: "break-word",
-              }}
-            >
-              {m.content}
-            </div>
+            {m.content}
           </div>
         ))}
-        {loading && (
-          <div style={{ fontStyle: "italic", color: "#666" }}>
-            Lancelot is thinking…
-          </div>
-        )}
       </div>
 
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={styles.row}>
         <textarea
-          rows={2}
-          style={{
-            flex: 1,
-            padding: 10,
-            borderRadius: 6,
-            border: "1px solid #d1d5db",
-            fontSize: 14,
-          }}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
           placeholder="Type a question or project summary… (Shift+Enter for new line)"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              sendMessage();
-            }
-          }}
+          style={styles.input}
         />
-        <button
-          onClick={sendMessage}
-          disabled={loading}
-          style={{
-            padding: "0 16px",
-            borderRadius: 6,
-            border: "none",
-            background: loading ? "#93c5fd" : "#2563eb",
-            color: "white",
-            cursor: loading ? "default" : "pointer",
-            minWidth: 80,
-          }}
-        >
-          Send
-        </button>
+        <button onClick={sendMessage} style={styles.button}>Send</button>
       </div>
     </div>
   );
 }
+
+const styles = {
+  page: { maxWidth: 840, margin: "40px auto", padding: "0 16px", fontFamily: "system-ui, sans-serif" },
+  title: { margin: "0 0 16px 0" },
+  chatBox: {
+    height: 520, overflowY: "auto", padding: 16, borderRadius: 12,
+    border: "1px solid #e6e6e6", background: "#fafafa", boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.00)"
+  },
+  bubble: {
+    display: "inline-block", padding: "10px 12px", borderRadius: 16,
+    margin: "8px 0", maxWidth: "80%", lineHeight: 1.4, whiteSpace: "pre-wrap"
+  },
+  user: { alignSelf: "flex-end", background: "#2d6cdf", color: "white", float: "right", clear: "both" },
+  assistant: { background: "#e9ecef", color: "#222", float: "left", clear: "both" },
+  row: { display: "flex", gap: 8, marginTop: 12 },
+  input: { flex: 1, minHeight: 48, padding: 10, borderRadius: 10, border: "1px solid #ddd" },
+  button: { padding: "0 16px", borderRadius: 10, border: "none", background: "#1677ff", color: "white", cursor: "pointer" }
+};

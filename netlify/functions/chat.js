@@ -1,5 +1,4 @@
 // /netlify/functions/chat.js
-import fetch from "node-fetch";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -14,37 +13,32 @@ export async function handler(event) {
   }
 
   try {
-    const body = JSON.parse(event.body || "{}");
-    const messages = body.messages || [
-      { role: "user", content: "Hello Lancelot!" },
-    ];
+    const { messages } = JSON.parse(event.body);
 
-    // Call OpenAI API
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini", // ✅ use gpt-4o-mini for responsiveness
-        messages,
+        model: "gpt-4o-mini",
+        messages: messages || [{ role: "user", content: "Hello" }],
       }),
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
+    const data = await response.json();
+
+    if (data.error) {
+      console.error("OpenAI API Error:", data.error);
       return {
-        statusCode: response.status,
+        statusCode: 500,
         headers: CORS,
-        body: JSON.stringify({ error: errText }),
+        body: JSON.stringify({ error: data.error.message }),
       };
     }
 
-    const data = await response.json();
-    const reply =
-      data.choices?.[0]?.message?.content ||
-      "⚠️ No reply received from model.";
+    const reply = data.choices?.[0]?.message?.content || "No response from model";
 
     return {
       statusCode: 200,
@@ -56,11 +50,13 @@ export async function handler(event) {
         content: reply,
       }),
     };
-  } catch (error) {
+
+  } catch (err) {
+    console.error("Server error:", err);
     return {
       statusCode: 500,
       headers: CORS,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ error: err.message }),
     };
   }
 }

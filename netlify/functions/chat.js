@@ -1,5 +1,6 @@
 // /netlify/functions/chat.js
-// Lancelot — greeting + name handling + Supabase context + OpenAI call (with debug errors)
+// Lancelot — greeting + name handling + Supabase context + OpenAI call
+// (UI-compatible responses: reply, message, text, content)
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -13,7 +14,21 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
-// ---------- helpers ----------
+// -------- helpers --------
+function respond(str) {
+  const reply = String(str || "").trim();
+  return {
+    statusCode: 200,
+    headers: CORS,
+    body: JSON.stringify({
+      reply,          // our own
+      message: reply, // some UIs read this
+      text: reply,    // some UIs read this
+      content: reply, // some UIs read this
+    }),
+  };
+}
+
 function getUserText(messages) {
   if (!Array.isArray(messages)) return "";
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -81,7 +96,7 @@ function systemPrompt(name = "there") {
   ].join(" ");
 }
 
-// ---------- handler ----------
+// -------- handler --------
 export async function handler(event) {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: CORS, body: "" };
@@ -93,46 +108,28 @@ export async function handler(event) {
 
     // 1) First contact → ask for name
     if (!messages.length || !userText) {
-      return {
-        statusCode: 200,
-        headers: CORS,
-        body: JSON.stringify({
-          reply: "Hello! How may I assist you? May I please have your name?",
-        }),
-      };
+      return respond("Hello! How may I assist you? May I please have your name?");
     }
 
-    // 2) If they only gave a name → acknowledge and ask how to help
+    // 2) Only a name → acknowledge + ask how to help
     const name = extractName(userText);
     const looksLikeOnlyName =
       !!name &&
       (userText.length <= name.length + 15 ||
         /^my name is\s+/i.test(userText) ||
         /^(i am|i'm)\s+/i.test(userText));
-
     if (looksLikeOnlyName) {
-      return {
-        statusCode: 200,
-        headers: CORS,
-        body: JSON.stringify({
-          reply: `Thank you, ${name}. How may I assist you today?`,
-        }),
-      };
+      return respond(`Thank you, ${name}. How may I assist you today?`);
     }
 
-    // 3) Pull lightweight context from your Supabase KB (optional)
+    // 3) KB context
     const kbRows = await fetchKBMatches(userText, 5);
 
-    // 4) Call OpenAI
+    // 4) OpenAI call
     if (!OPENAI_API_KEY) {
-      return {
-        statusCode: 200,
-        headers: CORS,
-        body: JSON.stringify({
-          reply:
-            "Server is missing OPENAI_API_KEY. Please add it in Netlify → Environment variables.",
-        }),
-      };
+      return respond(
+        "Server is missing OPENAI_API_KEY. Please add it in Netlify → Environment variables."
+      );
     }
 
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -154,32 +151,15 @@ export async function handler(event) {
 
     if (!openaiRes.ok) {
       const errTxt = await openaiRes.text().catch(() => "");
-      return {
-        statusCode: 200,
-        headers: CORS,
-        body: JSON.stringify({
-          reply: `OpenAI error: ${openaiRes.status} ${openaiRes.statusText}\n${errTxt}`,
-        }),
-      };
+      return respond(`OpenAI error: ${openaiRes.status} ${openaiRes.statusText}\n${errTxt}`);
     }
 
     const data = await openaiRes.json();
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I’m here and listening—could you try that once more?";
-
-    return {
-      statusCode: 200,
-      headers: CORS,
-      body: JSON.stringify({ reply }),
-    };
+    return respond(reply);
   } catch (err) {
-    return {
-      statusCode: 200,
-      headers: CORS,
-      body: JSON.stringify({
-        reply: `Server error: ${err?.message || err}`,
-      }),
-    };
+    return respond(`Server error: ${err?.message || err}`);
   }
 }

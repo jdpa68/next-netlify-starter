@@ -1,41 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 
-const K = {
-  name: "lance_name",
-  confirmed: "lance_name_confirmed_session",
-};
-
-const greetFirstTime =
-  "Hello! I’m Lancelot. What projects can I assist you with today? May I please have your name?";
-const greetReturn = (n) =>
-  `Welcome back! Are you still ${n}? (Reply “yes”, “no”, or share a different name.)`;
-
 export default function Home() {
+  // ---------- safe browser checks ----------
+  const isBrowser = typeof window !== "undefined";
+
+  // ---------- storage helpers (guarded) ----------
+  const LS_KEYS = { name: "lance_name", confirmed: "lance_name_confirmed_session" };
+  const getLS = (k) => (isBrowser ? window.localStorage.getItem(k) : null);
+  const setLS = (k, v) => { if (isBrowser) try { window.localStorage.setItem(k, v); } catch (_) {} };
+  const delLS = (k) => { if (isBrowser) try { window.localStorage.removeItem(k); } catch (_) {} };
+
+  // ---------- ui state ----------
   const [msgs, setMsgs] = useState([]);
   const [val, setVal] = useState("");
   const [sending, setSending] = useState(false);
   const [name, setName] = useState("");
   const [confirmed, setConfirmed] = useState(false);
-  const box = useRef(null);
+  const boxRef = useRef(null);
 
-  // ---------- helpers ----------
-  const scroll = () => requestAnimationFrame(() => {
-    if (box.current) box.current.scrollTop = box.current.scrollHeight;
-  });
-
-  const saveName = (raw) => {
-    const clean = tidy(raw);
-    if (!clean) return;
-    localStorage.setItem(K.name, clean);
-    localStorage.setItem(K.confirmed, "true");
-    setName(clean);
-    setConfirmed(true);
-  };
-
+  // ---------- utils ----------
   const tidy = (s) =>
     s.trim().replace(/\s+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   const extractName = (t) => {
+    if (!t) return "";
     const m1 = t.match(/\bmy\s+name\s+is\s+([a-z][a-z'\- ]{1,30})/i);
     if (m1) return tidy(m1[1]);
     const m2 = t.match(/\b(i['\s]*m|i\s+am)\s+([a-z][a-z'\- ]{1,30})/i);
@@ -44,28 +32,43 @@ export default function Home() {
     return "";
   };
 
-  // ---------- init ----------
-  useEffect(() => {
-    const saved = localStorage.getItem(K.name) || "";
-    const conf = localStorage.getItem(K.confirmed) === "true";
-    setName(saved);
-    setConfirmed(conf);
-    setMsgs([{ role: "assistant", content: saved ? greetReturn(saved) : greetFirstTime }]);
-  }, []);
+  const scrollDown = () => {
+    if (!isBrowser) return;
+    window.requestAnimationFrame?.(() => {
+      if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+    });
+  };
 
-  useEffect(scroll, [msgs, sending]);
+  // ---------- first load ----------
+  useEffect(() => {
+    const savedName = getLS(LS_KEYS.name) || "";
+    const savedConfirmed = getLS(LS_KEYS.confirmed) === "true";
+    setName(savedName);
+    setConfirmed(savedConfirmed);
+    setMsgs([
+      {
+        role: "assistant",
+        content: savedName
+          ? `Welcome back! Are you still ${savedName}? (Reply “yes”, “no”, or share a different name.)`
+          : "Hello! I’m Lancelot. What projects can I assist you with today? May I please have your name?",
+      },
+    ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once
+
+  useEffect(scrollDown, [msgs, sending]);
 
   // ---------- server call ----------
-  const askModel = async (full) => {
-    const r = await fetch("/.netlify/functions/chat", {
+  async function askModel(fullMessages) {
+    const res = await fetch("/.netlify/functions/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: full }),
+      body: JSON.stringify({ messages: fullMessages }),
     });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const j = await r.json();
-    return j.reply || j.message || j.text || j.content || "";
-  };
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data.reply || data.message || data.text || data.content || "";
+  }
 
   // ---------- submit ----------
   const onSubmit = async (e) => {
@@ -74,24 +77,27 @@ export default function Home() {
     if (!text || sending) return;
     setVal("");
 
-    const next = [...msgs, { role: "user", content: text }];
-    setMsgs(next);
+    const nextMsgs = [...msgs, { role: "user", content: text }];
+    setMsgs(nextMsgs);
 
+    // name confirmation flow
     const lower = text.toLowerCase();
-    const gotName = extractName(text);
+    const foundName = extractName(text);
 
-    // Returning user confirming name
     if (name && !confirmed) {
       if (["yes", "y", "yep", "yeah", "correct", "that’s me", "thats me"].includes(lower)) {
-        localStorage.setItem(K.confirmed, "true");
+        setLS(LS_KEYS.confirmed, "true");
         setConfirmed(true);
         setMsgs((m) => [...m, { role: "assistant", content: `Great—nice to see you again, ${name}! What would you like to work on today?` }]);
         return;
       }
-      if (["no", "n", "nope"].includes(lower) || gotName) {
-        if (gotName) {
-          saveName(gotName);
-          setMsgs((m) => [...m, { role: "assistant", content: `Thanks, ${gotName}. What would you like to work on today?` }]);
+      if (["no", "n", "nope"].includes(lower) || foundName) {
+        if (foundName) {
+          setLS(LS_KEYS.name, foundName);
+          setLS(LS_KEYS.confirmed, "true");
+          setName(foundName);
+          setConfirmed(true);
+          setMsgs((m) => [...m, { role: "assistant", content: `Thanks, ${foundName}. What would you like to work on today?` }]);
         } else {
           setMsgs((m) => [...m, { role: "assistant", content: "No problem—what’s your preferred name?" }]);
         }
@@ -99,20 +105,23 @@ export default function Home() {
       }
     }
 
-    // First-time name capture
-    if (!name && gotName) {
-      saveName(gotName);
-      setMsgs((m) => [...m, { role: "assistant", content: `Nice to meet you, ${gotName}! How can I help today?` }]);
+    // first-time name capture
+    if (!name && foundName) {
+      setLS(LS_KEYS.name, foundName);
+      setLS(LS_KEYS.confirmed, "true");
+      setName(foundName);
+      setConfirmed(true);
+      setMsgs((m) => [...m, { role: "assistant", content: `Nice to meet you, ${foundName}! How can I help today?` }]);
       return;
     }
 
-    // If it looks like only a name
-    if (!name && /^[a-z][a-z'\-]{1,30}$/i.test(text) && !gotName) {
+    // user typed just a single token that looks like a name
+    if (!name && /^[a-z][a-z'\-]{1,30}$/i.test(text) && !foundName) {
       setMsgs((m) => [...m, { role: "assistant", content: "Thanks! Is that your preferred name? If so, please say “My name is …” — or tell me what you’d like to work on." }]);
       return;
     }
 
-    // Ask the model
+    // ask model
     try {
       setSending(true);
       setMsgs((m) => [...m, { role: "assistant", content: "…" }]);
@@ -123,7 +132,7 @@ export default function Home() {
           "You are Lancelot, a warm, consultative higher-ed partner. Be concise, friendly, and collaborative. Ask clarifying questions before proposing a plan when needed. Use the user’s name when known.",
       };
       const nameNote = name ? { role: "system", content: `User’s preferred name: ${name}.` } : null;
-      const payload = [sys, ...(nameNote ? [nameNote] : []), ...next];
+      const payload = [sys, ...(nameNote ? [nameNote] : []), ...nextMsgs];
 
       const reply = await askModel(payload);
 
@@ -146,7 +155,7 @@ export default function Home() {
       <h1 style={{ fontSize: 32, marginBottom: 12 }}>Lancelot</h1>
 
       <div
-        ref={box}
+        ref={boxRef}
         style={{
           height: "60vh",
           borderRadius: 12,

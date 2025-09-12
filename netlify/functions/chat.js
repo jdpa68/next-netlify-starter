@@ -1,5 +1,5 @@
 // netlify/functions/chat.js
-// Lancelot — session-name memory + friendly greet
+// Lancelot — always ask name on first user message; remember name for session.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -8,10 +8,8 @@ const CORS = {
   "Content-Type": "application/json",
 };
 
-// Tiny in-memory session store (survives warm function invocations)
+// warm-instance session memory
 const sessions = new Map();
-
-// --- helpers ---------------------------------------------------------------
 
 function parseCookies(cookieHeader = "") {
   return Object.fromEntries(
@@ -20,21 +18,16 @@ function parseCookies(cookieHeader = "") {
       .map((c) => c.trim())
       .filter(Boolean)
       .map((c) => {
-        const idx = c.indexOf("=");
-        return [decodeURIComponent(c.slice(0, idx)), decodeURIComponent(c.slice(idx + 1))];
+        const i = c.indexOf("=");
+        return [decodeURIComponent(c.slice(0, i)), decodeURIComponent(c.slice(i + 1))];
       })
   );
 }
-
 function newSessionId() {
-  // simple random id
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
-
 function extractName(text = "") {
   if (!text) return null;
-
-  // very forgiving patterns
   const patterns = [
     /\bmy name is\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
     /\bi am\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
@@ -42,41 +35,25 @@ function extractName(text = "") {
     /\bthis is\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
     /^([A-Z][a-zA-Z'.\- ]{1,40})\s+here\b/i,
   ];
-
   for (const re of patterns) {
     const m = text.match(re);
-    if (m && m[1]) {
-      // trim titles if present
-      return m[1].replace(/\b(Mr\.?|Ms\.?|Mrs\.?|Dr\.?|Prof\.?)\b\.?\s*/i, "").trim();
-    }
+    if (m && m[1]) return m[1].replace(/\b(Mr|Ms|Mrs|Dr|Prof)\.?\s*/i, "").trim();
   }
-  // one-word name fallback if user just sent a single token like "Sam"
   if (/^[A-Z][a-zA-Z'.\-]{1,40}$/.test(text.trim())) return text.trim();
-
   return null;
 }
 
-// --- OpenAI call -----------------------------------------------------------
-
 async function callOpenAI({ systemPrompt, messages }) {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return { ok: false, text: "Server is missing OPENAI_API_KEY." };
-  }
+  if (!apiKey) return { ok: false, text: "Server missing OPENAI_API_KEY." };
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4o-mini",
       temperature: 0.3,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-      ],
+      messages: [{ role: "system", content: systemPrompt }, ...messages],
     }),
   });
 
@@ -84,13 +61,9 @@ async function callOpenAI({ systemPrompt, messages }) {
     const err = await res.text().catch(() => "");
     return { ok: false, text: `Upstream error: ${res.status} ${res.statusText} ${err}` };
   }
-
   const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content || "No response from model.";
-  return { ok: true, text };
+  return { ok: true, text: data?.choices?.[0]?.message?.content || "No response from model." };
 }
-
-// --- Netlify handler -------------------------------------------------------
 
 export async function handler(event) {
   if (event.httpMethod === "OPTIONS") {
@@ -101,47 +74,60 @@ export async function handler(event) {
   }
 
   let setCookie = null;
+
   try {
     const body = JSON.parse(event.body || "{}");
     const userMessages = Array.isArray(body.messages) ? body.messages : [];
     const lastUserText = userMessages.filter(m => m?.role === "user").slice(-1)[0]?.content || "";
 
-    // --- session: get or create id from cookie ----------------------------
+    // session
     const cookies = parseCookies(event.headers.cookie || event.headers.Cookie || "");
     let sid = cookies.lancelot_sid;
     if (!sid) {
       sid = newSessionId();
       setCookie = `lancelot_sid=${encodeURIComponent(sid)}; Path=/; Max-Age=86400; SameSite=Lax`;
     }
-    if (!sessions.has(sid)) sessions.set(sid, { name: null });
+    if (!sessions.has(sid)) sessions.set(sid, { name: null, sawFirstUser: false });
 
     const session = sessions.get(sid);
 
-    // First-time greeting if there are no user messages yet
+    // If UI hasn't sent any messages yet, send greeting that asks for name
     if (userMessages.length === 0) {
-      const greeting =
-        "Hello! How may I assist you? May I please have your name?";
-      const payload = JSON.stringify({ reply: greeting, message: greeting, text: greeting, content: greeting });
-      return { statusCode: 200, headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) }, body: payload };
+      const greet = "Hello! How may I assist you? May I please have your name?";
+      const payload = JSON.stringify({ reply: greet, message: greet, text: greet, content: greet });
+      return {
+        statusCode: 200,
+        headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
+        body: payload,
+      };
     }
 
-    // Try to learn name from this message if we don't have it yet
-    if (!session.name) {
-      const maybe = extractName(lastUserText);
-      if (maybe) {
-        session.name = maybe;
+    // FIRST user message handling: always try to collect a name
+    if (!session.sawFirstUser) {
+      session.sawFirstUser = true;
+      const maybeName = extractName(lastUserText);
+      if (maybeName) {
+        session.name = maybeName;
         sessions.set(sid, session);
-      }
-    }
-
-    // If we still don't have a name AND the user *only* gave a name-like phrase,
-    // ask them what they need.
-    if (!session.name) {
-      const maybe = extractName(lastUserText);
-      if (maybe) {
-        const ask =
-          `Nice to meet you, ${maybe}! How may I assist you today?`;
+        // proceed to model immediately with the user's question
+      } else {
+        // ask for name and stop here (no model call yet)
+        const ask = "Hello! How may I assist you? May I please have your name?";
         const payload = JSON.stringify({ reply: ask, message: ask, text: ask, content: ask });
+        return {
+          statusCode: 200,
+          headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
+          body: payload,
+        };
+      }
+    } else if (!session.name) {
+      // Not first message, but see if they just provided a name now
+      const maybeName = extractName(lastUserText);
+      if (maybeName) {
+        session.name = maybeName;
+        sessions.set(sid, session);
+        const ack = `Nice to meet you, ${maybeName}! How may I assist you today?`;
+        const payload = JSON.stringify({ reply: ack, message: ack, text: ack, content: ack });
         return {
           statusCode: 200,
           headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
@@ -150,25 +136,17 @@ export async function handler(event) {
       }
     }
 
-    // Build a friendly system prompt that uses the stored name if present
-    const displayName = session.name ? session.name : null;
+    const displayName = session.name || null;
     const systemPrompt = [
       "You are Lancelot, a friendly higher-ed strategy copilot.",
-      "Speak like a thoughtful consultant and teammate, concise but warm.",
-      "Always tailor advice to the user's goal. Ask a smart follow-up if the goal is unclear.",
-      displayName ? `The user's preferred name is "${displayName}". Use it naturally.` : "If the user hasn't given a name, you don't need to ask again.",
-      "Avoid fluff and generic checklists; be specific and helpful.",
+      "Speak like a thoughtful consultant and teammate—concise, warm, and practical.",
+      "Ask a smart follow-up when the goal is unclear; avoid generic boilerplate.",
+      displayName ? `The user's preferred name is "${displayName}". Use it naturally.` : "If you don't know the user's name, don't ask again unless invited.",
     ].join(" ");
 
-    // If we have a name, prepend a short acknowledgment once
-    const prefixedMessages =
-      displayName && !/^\s*(hi|hello)\b/i.test(lastUserText)
-        ? [{ role: "system", content: `When appropriate, acknowledge ${displayName} briefly in your replies.` }, ...userMessages]
-        : userMessages;
-
-    const { ok, text } = await callOpenAI({ systemPrompt, messages: prefixedMessages });
-
+    const { ok, text } = await callOpenAI({ systemPrompt, messages: userMessages });
     const out = ok ? text : `Error: ${text}`;
+
     return {
       statusCode: ok ? 200 : 500,
       headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
@@ -177,7 +155,7 @@ export async function handler(event) {
         message: out,
         text: out,
         content: out,
-        nameRemembered: session.name || null,
+        nameRemembered: displayName,
       }),
     };
   } catch (err) {

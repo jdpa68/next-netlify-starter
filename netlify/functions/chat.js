@@ -1,15 +1,30 @@
-// /netlify/functions/chat.js  (ESM)
+// /netlify/functions/chat.js
+// Netlify function: handles CORS, calls OpenAI Chat Completions, and returns a friendly message.
+// Uses a safe default model and surfaces any API errors back to the UI for quick debugging.
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Methods": "POST, OPTIONS"
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Content-Type": "application/json"
 };
 
-// Choose the model (can override in Netlify env with OPENAI_MODEL)
-const MODEL = process.env.OPENAI_MODEL || "gpt-4.0-mini";
+// Safer default; you can override in Netlify env with OPENAI_MODEL if desired
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Small helper: fetch JSON safely
+// Lancelot's friendly, consultant-style system prompt
+const SYSTEM_PROMPT = `
+You are “Lancelot,” a warm, professional higher-ed strategy partner.
+Bond first: learn (and remember) the user's preferred name if given. Be concise, specific, and useful.
+Avoid fluff like “this is important.” Never be condescending or overly formal.
+Ask 1–3 clarifying questions only when needed to advance the user’s goal.
+When asked for plans, produce clear step-by-step actions with brief justifications.
+If the user provides a “project summary,” reflect it back crisply and then propose next actions.
+Tone: collaborative consultant + teammate. Short paragraphs, bullets when helpful.
+`;
+
+// Helper: POST JSON with better error messaging
 async function postJSON(url, headers, body) {
   const res = await fetch(url, {
     method: "POST",
@@ -23,117 +38,75 @@ async function postJSON(url, headers, body) {
   return res.json();
 }
 
-export async function handler(event) {
-  // Handle preflight
+export async function handler(event, context) {
+  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: CORS_HEADERS, body: "" };
   }
 
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ error: "Use POST" })
-    };
-  }
-
   try {
-    const { messages = [], userName = "", q = "", tags = [] } = JSON.parse(event.body || "{}");
-
-    // ---- Pull context from Supabase (via REST; no extra packages needed) ----
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-
-    let kbSnippets = [];
-    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-      // Build a query: optional tag filter and/or text search on title/content
-      // REST docs: /rest/v1/<table>?select=*&column=ilike.*term*
-      const params = new URLSearchParams();
-      params.set("select", "title,content,tags");
-
-      const filters = [];
-      if (q && q.trim()) {
-        // search title or content using ilike
-        filters.push(`or=(title.ilike.*${encodeURIComponent(q)}*,content.ilike.*${encodeURIComponent(q)}*)`);
-      }
-      if (Array.isArray(tags) && tags.length > 0) {
-        // tags is a simple text column; match any tag text fragment
-        // You can change this to a stricter policy later if you convert to text[]
-        const tagFilter = tags
-          .map(t => `tags.ilike.*${encodeURIComponent(t)}*`)
-          .join(",");
-        filters.push(`or=(${tagFilter})`);
-      }
-      // limit results
-      params.set("limit", "6");
-
-      const url = `${SUPABASE_URL}/rest/v1/knowledge_base?${params.toString()}${filters.length ? `&${filters.join("&")}` : ""}`;
-
-      const res = await fetch(url, {
-        headers: {
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          Accept: "application/json"
-        }
-      });
-
-      if (res.ok) {
-        kbSnippets = await res.json();
-      } else {
-        // Don’t fail chat if KB lookup fails—just continue without it
-        // const errText = await res.text();
-        kbSnippets = [];
-      }
+    if (!OPENAI_API_KEY) {
+      throw new Error("Missing OPENAI_API_KEY environment variable.");
     }
 
-    // ---- Build the system prompt (tone + guardrails) ----
-    const systemPrompt = `
-You are "Lancelot", a friendly, sharp higher-education strategy partner.
-Personality: warm, concise, collaborative; never condescending or gushy.
-Bond first: learn the person's name and goal, then help them reach it.
-Ask 1–3 focused questions if the goal isn't clear; otherwise move quickly to next actions, examples, and templates.
-Use the user's name "${userName || "there"}" naturally once per answer.
-Prefer checklists, short bullets, and concrete next steps.
-If the question is a quick one-off, answer directly—no fishing for plans.
-Only cite knowledge below if it's actually relevant; otherwise answer from general expertise.
+    if (event.httpMethod !== "POST") {
+      return {
+        statusCode: 405,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ reply: "Please POST a message to this endpoint." })
+      };
+    }
 
-Knowledge snippets (may be empty):
-${kbSnippets.map((r, i) => `- [${i+1}] ${r.title}: ${r.content}`.slice(0, 1200)).join("\n")}
-    `.trim();
+    // Expecting JSON: { messages: [{role:'user'|'assistant'|'system', content:'...'}] }
+    // Your UI already sends { messages }, but we guard just in case.
+    let body = {};
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      // ignore, handled below if messages is missing
+    }
 
-    // ---- Prepare messages for OpenAI ----
-    // Expecting messages like [{role:"user", content:"..."}, ...]
-    const openAiMessages = [
-      { role: "system", content: systemPrompt },
-      ...messages
+    const incomingMessages = Array.isArray(body.messages) ? body.messages : [];
+    const name = (body.name || "").trim();
+
+    // Build chat history for OpenAI (system + user-provided history)
+    const messages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...(name ? [{ role: "system", content: `User prefers to be called: ${name}` }] : []),
+      ...incomingMessages
     ];
 
-    // ---- Call OpenAI ----
-    const openaiRes = await postJSON(
+    // Call OpenAI Chat Completions (stable + broadly enabled)
+    const data = await postJSON(
       "https://api.openai.com/v1/chat/completions",
-      { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      { Authorization: `Bearer ${OPENAI_API_KEY}` },
       {
         model: MODEL,
+        messages,
         temperature: 0.3,
-        messages: openAiMessages
+        max_tokens: 600
       }
     );
 
     const reply =
-      openaiRes.choices?.[0]?.message?.content ??
-      "I'm here and ready—could you please try that again?";
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "I’m here and ready—what would you like to tackle next?";
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+      headers: CORS_HEADERS,
       body: JSON.stringify({ reply })
     };
-
   } catch (err) {
+    // Bubble the actual error text back to the UI so you can see what's wrong
     return {
-      statusCode: 500,
+      statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ error: err.message || "Server error" })
+      body: JSON.stringify({
+        reply:
+          "I hit a snag talking to the model. Here are the details so we can fix it quickly:\n\n" +
+          (err?.message || String(err))
+      })
     };
   }
 }

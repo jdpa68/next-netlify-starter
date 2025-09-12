@@ -7,7 +7,7 @@ const CORS_HEADERS = {
 };
 
 // Choose the model (can override in Netlify env with OPENAI_MODEL)
-const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const MODEL = process.env.OPENAI_MODEL || "gpt-4.0-mini";
 
 // Small helper: fetch JSON safely
 async function postJSON(url, headers, body) {

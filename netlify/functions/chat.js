@@ -1,6 +1,6 @@
-// netlify/functions/chat.js
-// Lancelot — always ask name on first user message; remember name for session.
+// netlify/functions/chat.js  — Step 4: Supabase-powered answers
 
+// CORS for the browser widget
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -8,158 +8,149 @@ const CORS = {
   "Content-Type": "application/json",
 };
 
-// warm-instance session memory
-const sessions = new Map();
-
-function parseCookies(cookieHeader = "") {
-  return Object.fromEntries(
-    cookieHeader
-      .split(";")
-      .map((c) => c.trim())
-      .filter(Boolean)
-      .map((c) => {
-        const i = c.indexOf("=");
-        return [decodeURIComponent(c.slice(0, i)), decodeURIComponent(c.slice(i + 1))];
-      })
-  );
-}
-function newSessionId() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-function extractName(text = "") {
-  if (!text) return null;
-  const patterns = [
-    /\bmy name is\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
-    /\bi am\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
-    /\bi'm\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
-    /\bthis is\s+([A-Z][a-zA-Z'.\- ]{1,40})\b/i,
-    /^([A-Z][a-zA-Z'.\- ]{1,40})\s+here\b/i,
-  ];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m && m[1]) return m[1].replace(/\b(Mr|Ms|Mrs|Dr|Prof)\.?\s*/i, "").trim();
-  }
-  if (/^[A-Z][a-zA-Z'.\-]{1,40}$/.test(text.trim())) return text.trim();
-  return null;
-}
-
-async function callOpenAI({ systemPrompt, messages }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, text: "Server missing OPENAI_API_KEY." };
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0.3,
-      messages: [{ role: "system", content: systemPrompt }, ...messages],
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text().catch(() => "");
-    return { ok: false, text: `Upstream error: ${res.status} ${res.statusText} ${err}` };
-  }
-  const data = await res.json();
-  return { ok: true, text: data?.choices?.[0]?.message?.content || "No response from model." };
+// --- Helper: tiny keyword picker (safe + dependency-free) ---
+function topKeywords(str, max = 3) {
+  if (!str) return [];
+  const stop = new Set([
+    "the","a","an","and","or","to","of","for","with","in","on","at","by","is","are","was","were",
+    "i","we","you","they","it","this","that","from","as","about","into","over","be","can","do"
+  ]);
+  return Array.from(
+    (str.toLowerCase().match(/[a-z0-9]+/g) || [])
+      .filter(w => !stop.has(w) && w.length > 2)
+      .reduce((m,w)=>m.set(w,(m.get(w)||0)+1), new Map())
+  )
+  .sort((a,b)=>b[1]-a[1])
+  .slice(0, max)
+  .map(([w])=>w);
 }
 
 export async function handler(event) {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: CORS, body: "" };
-  }
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: "Method not allowed" }) };
-  }
-
-  let setCookie = null;
-
   try {
-    const body = JSON.parse(event.body || "{}");
-    const userMessages = Array.isArray(body.messages) ? body.messages : [];
-    const lastUserText = userMessages.filter(m => m?.role === "user").slice(-1)[0]?.content || "";
-
-    // session
-    const cookies = parseCookies(event.headers.cookie || event.headers.Cookie || "");
-    let sid = cookies.lancelot_sid;
-    if (!sid) {
-      sid = newSessionId();
-      setCookie = `lancelot_sid=${encodeURIComponent(sid)}; Path=/; Max-Age=86400; SameSite=Lax`;
+    if (event.httpMethod === "OPTIONS") {
+      return { statusCode: 200, headers: CORS, body: "" };
     }
-    if (!sessions.has(sid)) sessions.set(sid, { name: null, sawFirstUser: false });
 
-    const session = sessions.get(sid);
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: "Method not allowed" }) };
+    }
 
-    // If UI hasn't sent any messages yet, send greeting that asks for name
-    if (userMessages.length === 0) {
-      const greet = "Hello! How may I assist you? May I please have your name?";
-      const payload = JSON.stringify({ reply: greet, message: greet, text: greet, content: greet });
+    const {
+      message = "",
+      name = ""
+    } = JSON.parse(event.body || "{}");
+
+    // Env vars (already added in Netlify)
+    const OPENAI_API_KEY     = process.env.OPENAI_API_KEY;
+    const SUPABASE_URL       = process.env.SUPABASE_URL;
+    const SUPABASE_ANON_KEY  = process.env.SUPABASE_ANON_KEY;
+
+    if (!OPENAI_API_KEY) {
+      return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }) };
+    }
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "Missing Supabase credentials" }) };
+    }
+
+    // --- 1) Search Supabase REST Data API (no external libs needed) ---
+    const terms = topKeywords(message, 3);
+    // Build a simple OR ilike filter; if no keywords yet, just pull a few recent rows
+    let supaUrl = `${SUPABASE_URL}/rest/v1/knowledge_base?select=title,content,tags&limit=6`;
+    if (terms.length) {
+      const encoded = terms.map(t => `title.ilike.*${encodeURIComponent(t)}*,
+content.ilike.*${encodeURIComponent(t)}*,
+tags.ilike.*${encodeURIComponent(t)}*`).join(",");
+      supaUrl += `&or=(${encoded})`;
+    }
+
+    const kbRes = await fetch(supaUrl, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`
+      }
+    });
+
+    let kbItems = [];
+    if (kbRes.ok) {
+      kbItems = await kbRes.json();
+    }
+
+    const contextBlock = kbItems.length
+      ? kbItems.map((r,i) => {
+          const t = (r.title || "").trim();
+          const c = (r.content || "").trim();
+          const g = (r.tags || "").trim();
+          return `#${i+1} Title: ${t}\nTags: ${g}\nNotes: ${c}`;
+        }).join("\n\n")
+      : "No direct matches found in the knowledge base for this query. Fall back to general expertise and ask a couple of clarifying questions before answering.";
+
+    // --- 2) Compose the prompt with your tone & bonding rules ---
+    const systemPrompt = `
+You are Lancelot, a friendly, consultative higher-ed advisor. He who bonds, wins.
+Tone: warm, concise, team-oriented. Never condescending or sycophantic.
+Always:
+- Greet by name if provided (use “${name || ""}” when available).
+- Ask 1–2 sharp clarifying questions when the goal is ambiguous.
+- Use the knowledge base context when relevant; cite concept names naturally (no URLs).
+- If user only gave their name, politely ask how you can help.
+- When asked for plans, provide a short actionable outline first, then offer deeper steps.
+- Keep paragraphs compact for mobile.
+
+Knowledge Base (summaries):
+${contextBlock}
+`.trim();
+
+    // --- 3) If the user only gave their name, nudge for the task ---
+    const userMsg = (name && message.trim().toLowerCase() === name.trim().toLowerCase())
+      ? `My name is ${name}.`
+      : message || (name ? `My name is ${name}.` : "Hello");
+
+    // --- 4) Call OpenAI (Chat Completions) ---
+    const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: systemPrompt },
+          // Light greeting/behavior rule to capture the name-on-first-turn behavior
+          { role: "user", content: userMsg }
+        ]
+      })
+    });
+
+    if (!aiRes.ok) {
+      const errText = await aiRes.text().catch(() => "");
       return {
-        statusCode: 200,
-        headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
-        body: payload,
+        statusCode: 502,
+        headers: CORS,
+        body: JSON.stringify({ error: "OpenAI error", detail: errText })
       };
     }
 
-    // FIRST user message handling: always try to collect a name
-    if (!session.sawFirstUser) {
-      session.sawFirstUser = true;
-      const maybeName = extractName(lastUserText);
-      if (maybeName) {
-        session.name = maybeName;
-        sessions.set(sid, session);
-        // proceed to model immediately with the user's question
-      } else {
-        // ask for name and stop here (no model call yet)
-        const ask = "Hello! How may I assist you? May I please have your name?";
-        const payload = JSON.stringify({ reply: ask, message: ask, text: ask, content: ask });
-        return {
-          statusCode: 200,
-          headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
-          body: payload,
-        };
-      }
-    } else if (!session.name) {
-      // Not first message, but see if they just provided a name now
-      const maybeName = extractName(lastUserText);
-      if (maybeName) {
-        session.name = maybeName;
-        sessions.set(sid, session);
-        const ack = `Nice to meet you, ${maybeName}! How may I assist you today?`;
-        const payload = JSON.stringify({ reply: ack, message: ack, text: ack, content: ack });
-        return {
-          statusCode: 200,
-          headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
-          body: payload,
-        };
-      }
-    }
+    const data = await aiRes.json();
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "I’m here—how can I help today?";
 
-    const displayName = session.name || null;
-    const systemPrompt = [
-      "You are Lancelot, a friendly higher-ed strategy copilot.",
-      "Speak like a thoughtful consultant and teammate—concise, warm, and practical.",
-      "Ask a smart follow-up when the goal is unclear; avoid generic boilerplate.",
-      displayName ? `The user's preferred name is "${displayName}". Use it naturally.` : "If you don't know the user's name, don't ask again unless invited.",
-    ].join(" ");
-
-    const { ok, text } = await callOpenAI({ systemPrompt, messages: userMessages });
-    const out = ok ? text : `Error: ${text}`;
-
+    // Return multiple keys (your UI reads any of these)
     return {
-      statusCode: ok ? 200 : 500,
-      headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) },
+      statusCode: 200,
+      headers: CORS,
       body: JSON.stringify({
-        reply: out,
-        message: out,
-        text: out,
-        content: out,
-        nameRemembered: displayName,
-      }),
+        reply,
+        message: reply,
+        text: reply,
+        content: reply
+      })
     };
   } catch (err) {
-    const msg = `Server error: ${err?.message || err}`;
-    return { statusCode: 500, headers: { ...CORS, ...(setCookie ? { "Set-Cookie": setCookie } : {}) }, body: JSON.stringify({ error: msg }) };
+    return {
+      statusCode: 500,
+      headers: CORS,
+      body: JSON.stringify({ error: "Server error", detail: String(err) })
+    };
   }
 }

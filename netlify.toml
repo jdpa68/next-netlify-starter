@@ -1,3 +1,10 @@
 [build]
   command = "npm run build"
-  publish = ".next"
+  publish  = "out"
+
+[functions]
+  external_node_modules = ["@supabase/supabase-js"]
+  node_bundler = "esbuild"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

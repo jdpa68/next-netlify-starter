@@ -1,10 +1,9 @@
 // netlify/functions/chat-ask.js
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;            // <-- only this
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 exports.handler = async (event) => {
   try {
-    // Accept GET ?q=... (for quick tests) or POST {query:"..."} (from the UI)
     const method = event.httpMethod || "GET";
     const q =
       method === "POST"
@@ -18,31 +17,44 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: JSON.stringify({ error: "Missing OPENAI_API_KEY in Netlify env" }) };
     }
 
-    // Compute site base at runtime (Netlify sets URL in prod; fallback to host header)
+    // ---- build a friendly persona and simple “name” heuristic ----
+    // If user already told us a name (“I’m Jim”, “My name is …”), capture it; otherwise leave empty.
+    const nameMatch = q.match(/\b(?:i am|i’m|im|my name is|this is)\s+([A-Za-z][\w'-]*)/i);
+    const userName = nameMatch ? nameMatch[1] : "";
+
+    // ---- fetch grounded context from our own endpoint ----
     const siteBase =
       process.env.URL ||
       (event.headers && event.headers.host ? `https://${event.headers.host}` : "");
 
-    // 1) Get grounded context from our own function
     const ctxUrl = `${siteBase}/.netlify/functions/chat-context?q=${encodeURIComponent(q)}`;
     const ctxRes = await fetch(ctxUrl);
-    if (!ctxRes.ok) {
-      const e = await ctxRes.text();
-      return { statusCode: 500, body: JSON.stringify({ error: `chat-context failed: ${e}` }) };
+    let context_block = "";
+    if (ctxRes.ok) {
+      const ctxJson = await ctxRes.json();
+      context_block = ctxJson?.context_block || "";
     }
-    const { context_block = "" } = await ctxRes.json();
 
-    // 2) Prompt
+    // ---- prompt with warmth + grounding rules ----
     const system = [
-      "You are Lancelot, a higher-ed operations copilot.",
-      "Use the provided CONTEXT to answer pragmatically and concisely.",
-      "If context is thin, say what is missing and suggest next documents to consult.",
-      "Prefer actionable steps, and reference sources with their [index] from CONTEXT when useful."
+      "You are Lancelot, a warm, professional higher-ed operations copilot.",
+      "Be concise, pragmatic, and encouraging. Use bullets for steps.",
+      "GROUNDING: Prefer the provided CONTEXT. If context is thin, say briefly what’s missing and suggest which documents would help.",
+      "CITATIONS: When drawing from the context list, mention the source name in brackets like [Feasibility Study] if helpful.",
+      "NAME: If you do not know the user’s name yet, begin with ONE short, friendly sentence asking for their preferred name, then answer the question.",
+      "If a name is provided, greet them by name once at the top, then continue."
     ].join(" ");
 
-    const user = `CONTEXT:\n${context_block || "(no context found)"}\n\nQUESTION:\n${q}`;
+    const preface = userName
+      ? `User name (from message): ${userName}`
+      : `User name: (unknown — ask once, then answer)`;
 
-    // 3) Call OpenAI
+    const user = [
+      `META: ${preface}`,
+      `CONTEXT:\n${context_block || "(no relevant context found)"}`,
+      `QUESTION:\n${q}`
+    ].join("\n\n");
+
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -66,10 +78,15 @@ exports.handler = async (event) => {
 
     const data = await resp.json();
     const answer = data?.choices?.[0]?.message?.content || "(no answer)";
+
     return {
       statusCode: 200,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query: q, answer, context_used: !!context_block })
+      body: JSON.stringify({
+        query: q,
+        answer,
+        context_used: Boolean(context_block),
+      })
     };
   } catch (err) {
     return { statusCode: 500, body: JSON.stringify({ error: String(err?.message || err) }) };

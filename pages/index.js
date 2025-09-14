@@ -1,153 +1,235 @@
 // pages/index.js
-import { useEffect, useRef, useState } from "react";
+import { useState, useEffect, useRef } from "react";
+
+/** Escape HTML, then apply a few basic Markdown transforms safely. */
+function renderMarkdown(md) {
+  const escape = (s) =>
+    String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  let html = escape(md);
+
+  // code blocks ``` ```
+  html = html.replace(/```([\s\S]*?)```/g, (_, code) =>
+    `<pre style="white-space:pre-wrap;margin:8px 0;padding:10px;border-radius:8px;border:1px solid #eee;background:#f6f8fa;"><code>${escape(code)}</code></pre>`
+  );
+
+  // inline code `code`
+  html = html.replace(/`([^`\n]+)`/g, (_, code) =>
+    `<code style="background:#f6f8fa;padding:2px 4px;border-radius:4px;border:1px solid #eee;">${escape(code)}</code>`
+  );
+
+  // bold **text**
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // italic _text_
+  html = html.replace(/(^|[\s(])_([^_]+)_/g, "$1<em>$2</em>");
+
+  // numbered lists
+  html = html.replace(/(^|\n)(\d+)\.\s+(.*?)(?=\n\d+\. |\n- |\n\* |\n$)/gs, (m) => {
+    const items = m
+      .trim()
+      .split(/\n(?=\d+\. )/g)
+      .map((line) => line.replace(/^\d+\.\s+/, ""))
+      .map((li) => `<li>${li}</li>`)
+      .join("");
+    return `\n<ol style="margin:8px 0 8px 20px;">${items}</ol>`;
+  });
+
+  // bullet lists
+  html = html.replace(/(^|\n)[-*]\s+(.*?)(?=\n- |\n\* |\n\d+\. |\n$)/gs, (m) => {
+    const items = m
+      .trim()
+      .split(/\n(?=[-*]\s+)/g)
+      .map((line) => line.replace(/^[*-]\s+/, ""))
+      .map((li) => `<li>${li}</li>`)
+      .join("");
+    return `\n<ul style="margin:8px 0 8px 20px;">${items}</ul>`;
+  });
+
+  // line breaks
+  html = html.replace(/\n/g, "<br/>");
+  return html;
+}
 
 export default function Home() {
-  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [debug, setDebug] = useState(false);
-  const scrollerRef = useRef(null);
+  const [messages, setMessages] = useState(() => {
+    if (typeof window === "undefined")
+      return [{ role: "assistant", content: "Hi! Ask me anything Lancelot knows." }];
+    const saved = localStorage.getItem("lancelot_chat");
+    return saved
+      ? JSON.parse(saved)
+      : [{ role: "assistant", content: "Hi! Ask me anything Lancelot knows." }];
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const bottomRef = useRef(null);
 
-  // --- name memory (per session) ---
-  const getName = () => sessionStorage.getItem("lancelot_name") || "";
-  const saveName = (n) => sessionStorage.setItem("lancelot_name", n);
-
-  // detect ?debug=1
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setDebug(params.get("debug") === "1");
-  }, []);
-
-  // initial greeting
-  useEffect(() => {
-    if (messages.length === 0) {
-      const known = getName();
-      if (known) {
-        add("assistant", `Welcome back, ${known}! What would you like to work on today?`);
-      } else {
-        add("assistant", "Hello! How may I assist you today? May I please have your name?");
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const add = (role, text, meta = {}) => setMessages((prev) => [...prev, { role, text, meta }]);
-
-  const scrollToBottom = () => {
-    requestAnimationFrame(() => {
-      scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: "smooth" });
-    });
-  };
-  useEffect(scrollToBottom, [messages]);
-
-  // parse “name + remainder”
-  const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-  function parseNameAndRemainder(text) {
-    let t = text.trim().replace(/\s+/g, " ");
-    const m = t.match(/\b(?:my name is|i am|i'm|its|it's)\s+([A-Za-z][A-Za-z'’-]{1,30})\b/i);
-    if (m) return { name: cap(m[1]), remainder: t.replace(m[0], "").trim() };
-    if (!t.includes(" ") && /^[A-Za-z][A-Za-z'’-]{1,30}$/.test(t)) return { name: cap(t), remainder: "" };
-    return { name: "", remainder: t };
-  }
-
-  async function sendMessage() {
-    if (!input.trim() || isSending) return;
-
-    const raw = input.trim();
-    setInput("");
-    add("user", raw);
-
-    let name = getName();
-    const { name: parsed, remainder } = parseNameAndRemainder(raw);
-
-    // capture new name
-    if (!name && parsed) {
-      name = parsed;
-      saveName(name);
-      if (!remainder) {
-        add("assistant", `Nice to meet you, ${name}! What would you like to work on today?`);
-        return;
-      }
-    }
-    if (!name) {
-      add("assistant", "Thanks! Before we dive in, may I grab your preferred name?");
-      return;
-    }
-
-    // build minimal history (last 8 turns) to keep payload small
-    const recent = messages.slice(-8).map((m) => ({ role: m.role, content: m.text }));
-
-    setIsSending(true);
     try {
-      const res = await fetch("/.netlify/functions/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          messages: recent.concat([{ role: "user", content: remainder || raw }]),
-        }),
-      });
+      localStorage.setItem("lancelot_chat", JSON.stringify(messages.slice(-25)));
+    } catch {}
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-      const data = await res.json();
-      if (!res.ok) {
-        add("assistant", `Error ${res.status}: ${String(data.error || data).slice(0, 400)}`);
-      } else {
-        const reply = data.reply || "OK.";
-        add("assistant", reply, { intent: data.intent || "", kbHits: data.kbHits ?? 0 });
-      }
-    } catch (e) {
-      add("assistant", `Network hiccup: ${String(e).slice(0, 300)}`);
+  async function onSend(e) {
+    e.preventDefault();
+    setError("");
+    const text = input.trim();
+    if (!text || loading) return;
+
+    setMessages((m) => [...m, { role: "user", content: text }]);
+    setInput("");
+    setLoading(true);
+
+    const start = Date.now();
+    try {
+      const res = await fetch("/.netlify/functions/chat-ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: text })
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
+
+      const answer = json.answer || "(no answer)";
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: answer + `\n\n_(answered in ${elapsed}s)_` }
+      ]);
+    } catch (err) {
+      setError(String(err.message || err));
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: "Sorry—something went wrong. Try again." }
+      ]);
     } finally {
-      setIsSending(false);
+      setLoading(false);
     }
   }
 
-  function onKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
+  function clearChat() {
+    setMessages([{ role: "assistant", content: "Hi! Ask me anything Lancelot knows." }]);
+    setError("");
+    setInput("");
+  }
+
+  function copyText(text) {
+    try { navigator.clipboard.writeText(text); alert("Copied to clipboard"); } catch {}
+  }
+
+  function getLastAssistant() {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") return messages[i].content;
+    return "";
+  }
+
+  function emailLastAnswer() {
+    const content = getLastAssistant() || "(no answer yet)";
+    const subject = "Lancelot answer";
+    const body = content.replace(/\n/g, "%0D%0A");
+    try { navigator.clipboard.writeText(content); } catch {}
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${body}`;
+  }
+
+  function downloadTxt() {
+    const lines = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`);
+    const blob = new Blob([lines.join("\n\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g, "-");
+    a.href = url; a.download = `lancelot-chat-${ts}.txt`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }
+
+  async function downloadWord() {
+    try {
+      const res = await fetch("/.netlify/functions/download-chat-rtf", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `lancelot-chat-${ts}.rtf`; // Word-compatible
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("Download failed: " + (e?.message || e));
     }
   }
 
   return (
-    <div style={{ maxWidth: 820, margin: "32px auto", padding: "0 16px", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial" }}>
-      <h1 style={{ marginBottom: 12 }}>Lancelot</h1>
-
-      <div ref={scrollerRef} style={{ height: "56vh", border: "1px solid #e5e7eb", borderRadius: 10, padding: 16, overflowY: "auto", background: "white" }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", margin: "10px 0" }}>
-            <div style={{
-              padding: "10px 14px",
-              borderRadius: 12,
-              maxWidth: "80%",
-              lineHeight: 1.4,
-              background: m.role === "user" ? "#2563eb" : "#e5e7eb",
-              color: m.role === "user" ? "white" : "#111827",
-              whiteSpace: "pre-wrap"
-            }}>
-              {m.text}
-              {debug && m.role === "assistant" && (m.meta?.intent || m.meta?.kbHits >= 0) && (
-                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-                  {m.meta?.intent ? `intent:${m.meta.intent}` : ""} {typeof m.meta?.kbHits === "number" ? ` kb:${m.meta.kbHits}` : ""}
-                </div>
-              )}
-            </div>
+    <main style={styles.main}>
+      <div style={styles.card}>
+        <div style={styles.headerRow}>
+          <h1 style={{ margin: 0 }}>Lancelot</h1>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={emailLastAnswer} style={styles.secondaryBtn}>Email last answer</button>
+            <button onClick={downloadWord} style={styles.secondaryBtn}>Download chat (Word)</button>
+            <button onClick={downloadTxt} style={styles.secondaryBtn}>Download chat (.txt)</button>
+            <button onClick={clearChat} style={styles.secondaryBtn}>Clear chat</button>
           </div>
-        ))}
-      </div>
+        </div>
 
-      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Type a question or project summary… (Shift+Enter for new line)"
-          style={{ flex: 1, height: 44, padding: 10, borderRadius: 8, border: "1px solid #d1d5db", resize: "vertical" }}
-        />
-        <button onClick={sendMessage} disabled={isSending} style={{ background: "#2563eb", color: "white", padding: "0 16px", borderRadius: 8, border: 0 }}>
-          {isSending ? "Sending…" : "Send"}
-        </button>
+        <div style={styles.messages} id="chat-output">
+          {messages.map((m, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+              <div style={m.role === "user" ? styles.user : styles.assistant}>
+                <div style={styles.bubbleHeader}>
+                  <div style={styles.role}>{m.role === "user" ? "You" : "Lancelot"}</div>
+                  <button onClick={() => copyText(m.content)} style={styles.copyBtn} title="Copy">Copy</button>
+                </div>
+                <div dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+
+        {error ? <div style={styles.error}>Error: {error}</div> : null}
+
+        <form onSubmit={onSend} style={styles.form}>
+          <textarea
+            id="chat-input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(e); }
+            }}
+            placeholder="Type your question…"
+            rows={3}
+            style={styles.textarea}
+          />
+          <button type="submit" style={styles.button} disabled={loading}>
+            {loading ? "Thinking…" : "Send"}
+          </button>
+        </form>
+
+        <div style={styles.hint}>
+          Tip: try **Create an accreditation task list for a small private college.**
+        </div>
       </div>
-    </div>
+    </main>
   );
 }
+
+const styles = {
+  main: { minHeight: "100vh", background: "#0b1020", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
+  card: { width: "100%", maxWidth: 780, background: "white", borderRadius: 12, padding: 20, boxShadow: "0 10px 30px rgba(0,0,0,0.2)" },
+  headerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8 },
+  messages: { border: "1px solid #e6e6e6", borderRadius: 8, padding: 12, height: 460, overflowY: "auto", background: "#fafafa", marginBottom: 12 },
+  user: { background: "#dff0ff", borderRadius: 8, padding: 10, margin: "8px", maxWidth: "70%", alignSelf: "flex-end" },
+  assistant: { background: "#f2f7ff", borderRadius: 8, padding: 10, margin: "8px", maxWidth: "70%", alignSelf: "flex-start" },
+  bubbleHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  role: { fontSize: 12, fontWeight: 600, color: "#666" },
+  form: { display: "flex", gap: 8, alignItems: "stretch" },
+  textarea: { flex: 1, padding: 10, borderRadius: 8, border: "1px solid #ddd", resize: "vertical" },
+  button: { padding: "10px 16px", borderRadius: 8, border: "none", background: "#3a5bfd", color: "#fff", cursor: "pointer" },
+  secondaryBtn: { padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#f8fafc", color: "#111827", cursor: "pointer" },
+  hint: { marginTop: 8, fontSize: 12, color: "#666" },
+  error: { color: "#b00020", marginBottom: 8 },
+  copyBtn: { fontSize: 12, border: "1px solid #e5e7eb", background: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer" }
+};

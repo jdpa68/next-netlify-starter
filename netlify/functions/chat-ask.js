@@ -1,13 +1,10 @@
 // netlify/functions/chat-ask.js
-const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
-
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL  = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const SITE_BASE = process.env.URL || "https://YOUR-SITE.netlify.app"; // fallback if URL isn't set
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;            // <-- only this
+const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 exports.handler = async (event) => {
   try {
-    // Accept GET ?q=... for quick testing, or POST {query:"..."} from the UI
+    // Accept GET ?q=... (for quick tests) or POST {query:"..."} (from the UI)
     const method = event.httpMethod || "GET";
     const q =
       method === "POST"
@@ -21,8 +18,13 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: JSON.stringify({ error: "Missing OPENAI_API_KEY in Netlify env" }) };
     }
 
+    // Compute site base at runtime (Netlify sets URL in prod; fallback to host header)
+    const siteBase =
+      process.env.URL ||
+      (event.headers && event.headers.host ? `https://${event.headers.host}` : "");
+
     // 1) Get grounded context from our own function
-    const ctxUrl = `${SITE_BASE}/.netlify/functions/chat-context?q=${encodeURIComponent(q)}`;
+    const ctxUrl = `${siteBase}/.netlify/functions/chat-context?q=${encodeURIComponent(q)}`;
     const ctxRes = await fetch(ctxUrl);
     if (!ctxRes.ok) {
       const e = await ctxRes.text();
@@ -30,7 +32,7 @@ exports.handler = async (event) => {
     }
     const { context_block = "" } = await ctxRes.json();
 
-    // 2) Build prompt
+    // 2) Prompt
     const system = [
       "You are Lancelot, a higher-ed operations copilot.",
       "Use the provided CONTEXT to answer pragmatically and concisely.",
@@ -44,7 +46,7 @@ exports.handler = async (event) => {
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "authorization": `Bearer ${OPENAI_API_KEY}`,
+        authorization: `Bearer ${OPENAI_API_KEY}`,
         "content-type": "application/json"
       },
       body: JSON.stringify({

@@ -1,7 +1,7 @@
 // netlify/functions/chat-ask.js
 const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_APT_KEY; // supports either name
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL  = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const SITE_BASE = process.env.URL || "https://YOUR-SITE.netlify.app"; // fallback if URL isn't set
 

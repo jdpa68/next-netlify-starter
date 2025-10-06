@@ -53,7 +53,11 @@ export async function handler(event) {
 
     return {
       statusCode: upstream.status,
-      headers: { 'content-type': contentType },
+      headers: {
+        'content-type': contentType,
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, OPTIONS',
+      },
       body
     };
   } catch (err) {

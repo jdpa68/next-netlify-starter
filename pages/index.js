@@ -1,3 +1,24 @@
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+);
+
+// This runs on the server at request time (so it can read Netlify env vars safely).
+export async function getServerSideProps() {
+  const { data, error } = await supabase
+    .from('knowledge_base')
+    .select('id, title, summary, tags, source_url')
+    .limit(5);
+
+  return {
+    props: {
+      kbSamples: data || [],
+      kbError: error ? String(error.message) : null,
+    },
+  };
+}
 // pages/index.js
 import { useState, useEffect, useRef } from "react";
 

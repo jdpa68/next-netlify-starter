@@ -1,58 +1,66 @@
 // netlify/functions/fetchGovInfo.js
-// GovInfo API connector (POST search for CFR content)
+// Simpler GovInfo search (POST) for CFR by "34 CFR" and optional Part.
+// Requires GOVINFO_API_KEY in Netlify env.
 
 export async function handler(event) {
-  const apiKey = process.env.GOVINFO_API_KEY;
-  if (!apiKey) {
-    return send(500, { error: "Missing GOVINFO_API_KEY environment variable" });
-  }
-
-  const title = (event.queryStringParameters?.title || "34").trim();
-  const year = (event.queryStringParameters?.year || "2025").trim();
-  const part = (event.queryStringParameters?.part || "").trim();
-
   try {
-    const isoDate = `${year}-01-01T00:00:00Z`;
-    const collURL = `https://api.govinfo.gov/collections/CFR/${encodeURIComponent(isoDate)}?pageSize=100&api_key=${apiKey}`;
+    const apiKey = process.env.GOVINFO_API_KEY;
+    if (!apiKey) return send(500, { error: "Missing GOVINFO_API_KEY" });
 
-    const collResp = await fetch(collURL);
-    const collData = await collResp.json();
+    const title = (event.queryStringParameters?.title || "34").trim(); // CFR Title number
+    const part  = (event.queryStringParameters?.part  || "").trim();   // optional Part number
+    const max   = 6;
 
-    let packages = Array.isArray(collData.packages)
-      ? collData.packages.filter(pkg => {
-          const id = (pkg.packageId || "").toLowerCase();
-          const t = (pkg.title || "").toLowerCase();
-          return (
-            t.includes(`title ${title}`) ||
-            id.includes(`title${title}`)
-          );
-        })
-      : [];
+    // Build two practical queries that usually return packages:
+    // 1) Exact "34 CFR 668" style phrase if part is present
+    // 2) Fallback broader form with Title/Part words
+    const queries = part
+      ? [
+          `"${title} CFR ${part}"`,
+          `"Code of Federal Regulations" AND Title ${title} AND Part ${part}`
+        ]
+      : [
+          `"${title} CFR"`,
+          `"Code of Federal Regulations" AND Title ${title}`
+        ];
 
-    // If no results found in collection, use /search (POST)
-    if (packages.length === 0) {
-      const query = part
-        ? `"Code of Federal Regulations" AND Title ${title} AND Part ${part}`
-        : `"Code of Federal Regulations" AND Title ${title}`;
-
-      const searchURL = `https://api.govinfo.gov/search?api_key=${apiKey}`;
-      const searchResp = await fetch(searchURL, {
+    // POST search helper
+    const searchPOST = async (query) => {
+      const url = `https://api.govinfo.gov/search?api_key=${apiKey}`;
+      const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, collection: "CFR", pageSize: 25 })
       });
-      const searchData = await searchResp.json();
-      packages = Array.isArray(searchData.results)
-        ? searchData.results.map(r => ({
-            packageId: r.packageId,
-            title: r.title,
-            dateIssued: r.dateIssued,
-            link: r.download?.pdf || r.download?.txt || null
-          }))
-        : [];
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch {
+        throw new Error(`GovInfo search error ${resp.status}: ${text.slice(0,180)}`);
+      }
+      if (!resp.ok) throw new Error(data?.message || data?.detail || `Status ${resp.status}`);
+      return Array.isArray(data.results) ? data.results : [];
+    };
+
+    // Try each query until we find results
+    let hits = [];
+    for (const q of queries) {
+      hits = await searchPOST(q);
+      if (hits.length) break;
     }
 
-    return send(200, { count: packages.length, items: packages.slice(0, 6) });
+    if (!hits.length) return send(200, { count: 0, items: [] });
+
+    // Summarize first few results; include download links when available
+    const firstFew = hits.slice(0, max);
+    const items = firstFew.map(r => ({
+      packageId: r.packageId,
+      title: r.title,
+      dateIssued: r.dateIssued,
+      link: r.download?.pdf || r.download?.txt || null,
+      downloads: r.download || {}
+    }));
+
+    return send(200, { count: items.length, items });
   } catch (err) {
     return send(500, { error: err.message || String(err) });
   }

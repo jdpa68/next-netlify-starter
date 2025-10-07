@@ -2,7 +2,7 @@ import Head from "next/head";
 import { useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// Create Supabase client safely each time
+/* ---------- Supabase client ---------- */
 function getClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL,
@@ -10,29 +10,78 @@ function getClient() {
   );
 }
 
-// Server-side preload (initial list)
+/* ---------- Helpers ---------- */
+function toArray(maybe) {
+  if (!maybe) return [];
+  if (Array.isArray(maybe)) return maybe;
+  // handle "tag1, tag2, tag3"
+  return String(maybe)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function extractPrefixedTags(rows, prefix) {
+  const set = new Set();
+  rows.forEach((r) => {
+    toArray(r.tags).forEach((t) => {
+      if (t.startsWith(prefix)) set.add(t);
+    });
+  });
+  return Array.from(set).sort();
+}
+
+function labelFromTag(tag, prefix) {
+  // "issue_student_outcomes" -> "Student Outcomes"
+  const core = tag.replace(prefix, "");
+  return core
+    .split("_")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
+}
+
+/* ---------- Server-side preload ---------- */
 export async function getServerSideProps() {
   const supabase = getClient();
-  const { data, error } = await supabase
+
+  // 1) Fetch a larger slice just to harvest tags (cheap)
+  const { data: tagScan = [] } = await supabase
+    .from("knowledge_base")
+    .select("id, tags")
+    .limit(500);
+
+  const areaTags = extractPrefixedTags(tagScan, "area_");
+  const issueTags = extractPrefixedTags(tagScan, "issue_");
+
+  // 2) Initial records to show
+  const { data: initialData = [], error } = await supabase
     .from("knowledge_base")
     .select("id, title, summary, tags, source_url")
     .limit(10);
 
   return {
     props: {
-      initialData: data || [],
+      initialData,
       initialError: error ? String(error.message) : null,
+      areaTags,
+      issueTags,
     },
   };
 }
 
-export default function Home({ initialData = [], initialError = null }) {
+/* ---------- Page ---------- */
+export default function Home({
+  initialData = [],
+  initialError = null,
+  areaTags = [],
+  issueTags = [],
+}) {
   const [records, setRecords] = useState(initialData);
   const [loading, setLoading] = useState(false);
-  const [area, setArea] = useState("all");
-  const [issue, setIssue] = useState("all");
+  const [areaTag, setAreaTag] = useState("all");
+  const [issueTag, setIssueTag] = useState("all");
 
-  async function refetch(nextArea = area, nextIssue = issue) {
+  async function refetch(nextArea = areaTag, nextIssue = issueTag) {
     setLoading(true);
     const supabase = getClient();
 
@@ -41,8 +90,8 @@ export default function Home({ initialData = [], initialError = null }) {
       .select("id, title, summary, tags, source_url")
       .limit(10);
 
-    if (nextArea !== "all") query = query.ilike("tags", `%area_${nextArea}%`);
-    if (nextIssue !== "all") query = query.ilike("tags", `%issue_${nextIssue}%`);
+    if (nextArea !== "all") query = query.ilike("tags", `%${nextArea}%`);
+    if (nextIssue !== "all") query = query.ilike("tags", `%${nextIssue}%`);
 
     const { data, error } = await query;
     if (!error) setRecords(data || []);
@@ -50,15 +99,15 @@ export default function Home({ initialData = [], initialError = null }) {
   }
 
   function onAreaChange(e) {
-    const value = e.target.value;
-    setArea(value);
-    refetch(value, issue);
+    const val = e.target.value;
+    setAreaTag(val);
+    refetch(val, issueTag);
   }
 
   function onIssueChange(e) {
-    const value = e.target.value;
-    setIssue(value);
-    refetch(area, value);
+    const val = e.target.value;
+    setIssueTag(val);
+    refetch(areaTag, val);
   }
 
   return (
@@ -69,7 +118,7 @@ export default function Home({ initialData = [], initialError = null }) {
 
       <header style={{ borderBottom: "2px solid #0f172a", marginBottom: 24 }}>
         <h1 style={{ margin: 0, color: "#0f172a" }}>PeerQuest Lancelot</h1>
-        <p style={{ opacity: 0.7 }}>Evidence Tray • Area + Issue Filters</p>
+        <p style={{ opacity: 0.7 }}>Evidence Tray • Dynamic Filters (from real tags)</p>
       </header>
 
       {/* Filter Bar */}
@@ -88,36 +137,10 @@ export default function Home({ initialData = [], initialError = null }) {
         }}
       >
         <label style={{ fontSize: 14, fontWeight: 600 }}>
-          Filter by Area:
+          Area:
           <select
             onChange={onAreaChange}
-            value={area}
-            style={{
-              marginLeft: 10,
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              background: "#f1f5f9",
-              minWidth: 180,
-            }}
-          >
-            <option value="all">All</option>
-            <option value="enrollment">Enrollment</option>
-            <option value="finance">Finance</option>
-            <option value="financial_aid">Financial Aid</option>
-            <option value="marketing">Marketing</option>
-            <option value="accreditation">Accreditation</option>
-            <option value="curriculum">Curriculum</option>
-            <option value="it">IT & Systems</option>
-            <option value="leadership">Leadership</option>
-          </select>
-        </label>
-
-        <label style={{ fontSize: 14, fontWeight: 600 }}>
-          Filter by Issue:
-          <select
-            onChange={onIssueChange}
-            value={issue}
+            value={areaTag}
             style={{
               marginLeft: 10,
               padding: "6px 10px",
@@ -127,17 +150,35 @@ export default function Home({ initialData = [], initialError = null }) {
               minWidth: 220,
             }}
           >
-            <option value="all">All</option>
-            {/* Common examples used in your KB; safe to expand later */}
-            <option value="retention">Student Retention & Completion</option>
-            <option value="roi">Value/ROI of Degrees</option>
-            <option value="financial_sustainability">Financial Sustainability</option>
-            <option value="declining_enrollment">Declining Enrollment & Demographics</option>
-            <option value="academic_quality">Academic Quality & Relevance</option>
-            {/* plus other tags we’ve seen in KB like student_outcomes, vendor_partnerships, crm */}
-            <option value="student_outcomes">Student Outcomes</option>
-            <option value="vendor_partnerships">Vendor Partnerships</option>
-            <option value="crm">CRM</option>
+            <option value="all">All Areas</option>
+            {areaTags.map((t) => (
+              <option key={t} value={t}>
+                {labelFromTag(t, "area_")}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ fontSize: 14, fontWeight: 600 }}>
+          Issue:
+          <select
+            onChange={onIssueChange}
+            value={issueTag}
+            style={{
+              marginLeft: 10,
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid #e2e8f0",
+              background: "#f1f5f9",
+              minWidth: 260,
+            }}
+          >
+            <option value="all">All Issues</option>
+            {issueTags.map((t) => (
+              <option key={t} value={t}>
+                {labelFromTag(t, "issue_")}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -160,9 +201,7 @@ export default function Home({ initialData = [], initialError = null }) {
         </h2>
 
         {initialError && <p style={{ color: "#b91c1c" }}>Error: {initialError}</p>}
-        {records.length === 0 && !loading && (
-          <p>No records found for this combination.</p>
-        )}
+        {records.length === 0 && !loading && <p>No records found for this combination.</p>}
 
         <div
           style={{
@@ -183,30 +222,30 @@ export default function Home({ initialData = [], initialError = null }) {
                 background: "#ffffff",
               }}
             >
-              <h3 style={{ marginTop: 0, marginBottom: 4, color: "#1e293b" }}>
-                {r.title}
-              </h3>
+              <h3 style={{ marginTop: 0, marginBottom: 4, color: "#1e293b" }}>{r.title}</h3>
               <p style={{ marginTop: 0, marginBottom: 8, fontSize: 14, color: "#334155" }}>
                 {r.summary}
               </p>
               {r.tags && (
                 <div style={{ marginBottom: 8 }}>
-                  {r.tags.split(",").slice(0, 4).map((t, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        display: "inline-block",
-                        background: "#e2e8f0",
-                        color: "#0f172a",
-                        borderRadius: 6,
-                        padding: "2px 8px",
-                        fontSize: 12,
-                        marginRight: 6,
-                      }}
-                    >
-                      {t.trim()}
-                    </span>
-                  ))}
+                  {toArray(r.tags)
+                    .slice(0, 4)
+                    .map((t, i) => (
+                      <span
+                        key={`${r.id}-${i}`}
+                        style={{
+                          display: "inline-block",
+                          background: "#e2e8f0",
+                          color: "#0f172a",
+                          borderRadius: 6,
+                          padding: "2px 8px",
+                          fontSize: 12,
+                          marginRight: 6,
+                        }}
+                      >
+                        {t}
+                      </span>
+                    ))}
                 </div>
               )}
               {r.source_url && (
@@ -225,12 +264,7 @@ export default function Home({ initialData = [], initialError = null }) {
       </section>
 
       <footer
-        style={{
-          marginTop: 40,
-          fontSize: 13,
-          opacity: 0.6,
-          textAlign: "center",
-        }}
+        style={{ marginTop: 40, fontSize: 13, opacity: 0.6, textAlign: "center" }}
       >
         Lancelot • Netlify Demo • © {new Date().getFullYear()}
       </footer>

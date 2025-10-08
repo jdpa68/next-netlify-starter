@@ -1,21 +1,25 @@
 // netlify/functions/fetchBLS.js
 // Route: /.netlify/functions/fetchBLS?series=CES6562140001
-export const config = { path: "/fetchBLS" };
-
-export default async function handler(req, res) {
+exports.handler = async function (event, context) {
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const series = url.searchParams.get("series") || "CES6562140001";
-    const key = process.env.BLS_API_KEY; // optional
+    const qs = event.rawUrl.includes("?") ? event.rawUrl.split("?")[1] : "";
+    const params = new URLSearchParams(qs);
+    const series = params.get("series") || "CES6562140001";
+    const key = process.env.BLS_API_KEY; // optional for light use
+
     const api = key
       ? `https://api.bls.gov/publicAPI/v2/timeseries/data/${encodeURIComponent(series)}?latest=true&registrationkey=${encodeURIComponent(key)}`
       : `https://api.bls.gov/publicAPI/v2/timeseries/data/${encodeURIComponent(series)}?latest=true`;
 
-    const r = await fetch(api, { headers: { Accept: "application/json" } });
-    const text = await r.text();
-    res.setHeader("Content-Type", "application/json");
-    res.status(r.ok ? 200 : r.status).send(text);
+    const response = await fetch(api, { headers: { Accept: "application/json" } });
+    const text = await response.text();
+
+    return {
+      statusCode: response.ok ? 200 : response.status,
+      headers: { "Content-Type": "application/json" },
+      body: text
+    };
   } catch (e) {
-    res.status(500).send(JSON.stringify({ error: e.message }));
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
-}
+};

@@ -5,7 +5,7 @@ export default async function handler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const unitid = url.searchParams.get("unitid") || "217156";
-    const key = process.env.SCORECARD_KEY; // add in Netlify → Environment variables
+    const key = process.env.DATA_GOV_KEY; // add in Netlify → Environment variables
     if (!key) {
       res.status(500).send(JSON.stringify({ error: "Missing SCORECARD_KEY env var" }));
       return;

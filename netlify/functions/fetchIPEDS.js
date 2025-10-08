@@ -1,14 +1,15 @@
 // netlify/functions/fetchIPEDS.js
 // Route: /.netlify/functions/fetchIPEDS?unitid=217156
 // Requires Netlify env: DATA_GOV_KEY (College Scorecard API key)
-export const config = { path: "/fetchIPEDS" };
-
-export default async function handler(req, res) {
+exports.handler = async function (event, context) {
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const unitid = url.searchParams.get("unitid") || "217156";
+    const qs = event.rawUrl.includes("?") ? event.rawUrl.split("?")[1] : "";
+    const params = new URLSearchParams(qs);
+    const unitid = params.get("unitid") || "217156";
     const key = process.env.DATA_GOV_KEY;
-    if (!key) return res.status(500).json({ error: "Missing DATA_GOV_KEY" });
+    if (!key) {
+      return { statusCode: 500, body: JSON.stringify({ error: "Missing DATA_GOV_KEY" }) };
+    }
 
     const fields = [
       "id","school.name","school.city","school.state",
@@ -19,11 +20,15 @@ export default async function handler(req, res) {
     ].join(",");
 
     const api = `https://api.collegescorecard.ed.gov/v1/schools?id=${encodeURIComponent(unitid)}&api_key=${encodeURIComponent(key)}&fields=${encodeURIComponent(fields)}`;
-    const r = await fetch(api, { headers: { Accept: "application/json" } });
-    const text = await r.text();
-    res.setHeader("Content-Type", "application/json");
-    res.status(r.ok ? 200 : r.status).send(text);
+    const response = await fetch(api, { headers: { Accept: "application/json" } });
+    const text = await response.text();
+
+    return {
+      statusCode: response.ok ? 200 : response.status,
+      headers: { "Content-Type": "application/json" },
+      body: text
+    };
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
-}
+};

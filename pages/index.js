@@ -2,7 +2,7 @@ import Head from "next/head";
 import { useState, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* Supabase client (reads Netlify env) */
+/* Supabase client */
 function getClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL,
@@ -10,15 +10,9 @@ function getClient() {
   );
 }
 
-/* Server-side: preload data + real tag lists */
+/* Server-side: preload + real tag lists */
 export async function getServerSideProps() {
   const supabase = getClient();
-
-  // Pull a larger slice to harvest real tags (no guesses)
-  const { data: tagScan = [] } = await supabase
-    .from("knowledge_base")
-    .select("id, tags")
-    .limit(500);
 
   const toArray = (v) =>
     Array.isArray(v)
@@ -28,6 +22,11 @@ export async function getServerSideProps() {
           .map((s) => s.trim())
           .filter(Boolean);
 
+  const { data: tagScan = [] } = await supabase
+    .from("knowledge_base")
+    .select("id, tags")
+    .limit(500);
+
   const areaSet = new Set();
   const issueSet = new Set();
   tagScan.forEach((r) =>
@@ -36,6 +35,7 @@ export async function getServerSideProps() {
       if (t.startsWith("issue_")) issueSet.add(t);
     })
   );
+
   const areaTags = Array.from(areaSet).sort((a, b) =>
     a.localeCompare(b, undefined, { sensitivity: "base" })
   );
@@ -43,11 +43,10 @@ export async function getServerSideProps() {
     a.localeCompare(b, undefined, { sensitivity: "base" })
   );
 
-  // Initial page
   const { data: initialData = [], error } = await supabase
     .from("knowledge_base")
     .select("id, title, summary, tags, source_url")
-    .limit(10);
+    .limit(20);
 
   return {
     props: {
@@ -66,11 +65,15 @@ export default function Home({
   areaTags = [],
   issueTags = [],
 }) {
+  const PAGE_SIZE = 20;
   const [records, setRecords] = useState(initialData);
   const [loading, setLoading] = useState(false);
   const [areaTag, setAreaTag] = useState("all");
   const [issueTag, setIssueTag] = useState("all");
   const [q, setQ] = useState("");
+  const [total, setTotal] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [page, setPage] = useState(1);
   const debounceRef = useRef(null);
 
   const toArray = (v) =>
@@ -81,55 +84,96 @@ export default function Home({
           .map((s) => s.trim())
           .filter(Boolean);
 
-  async function refetch(nextArea = areaTag, nextIssue = issueTag, nextQ = q) {
-    setLoading(true);
-    const supabase = getClient();
+  function buildQuery(supabase, countOnly = false) {
+    let sel = countOnly ? "id" : "id, title, summary, tags, source_url";
+    let query = supabase.from("knowledge_base").select(sel, {
+      count: "exact",
+      head: countOnly,
+    });
 
-    let query = supabase
-      .from("knowledge_base")
-      .select("id, title, summary, tags, source_url")
-      .limit(20);
+    if (areaTag !== "all") query = query.ilike("tags", `%${areaTag}%`);
+    if (issueTag !== "all") query = query.ilike("tags", `%${issueTag}%`);
 
-    if (nextArea !== "all") query = query.ilike("tags", `%${nextArea}%`);
-    if (nextIssue !== "all") query = query.ilike("tags", `%${nextIssue}%`);
-
-    const like = String(nextQ || "").replace(/%/g, "").trim();
+    const like = String(q || "").replace(/%/g, "").trim();
     if (like) {
-      // search title OR summary OR tags
       query = query.or(
         `title.ilike.%${like}%,summary.ilike.%${like}%,tags.ilike.%${like}%`
       );
     }
+    return query;
+  }
 
+  async function fetchData({ reset = true } = {}) {
+    setLoading(true);
+    const supabase = getClient();
+
+    // count
+    const { count } = await buildQuery(supabase, true);
+    if (typeof count === "number") setTotal(count);
+
+    // data page
+    const nextPage = reset ? 1 : page + 1;
+    const from = (nextPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
+    let query = buildQuery(supabase, false).range(from, to);
     const { data, error } = await query;
-    if (!error) setRecords(data || []);
+
+    if (!error) {
+      setRecords(reset ? data : [...records, ...data]);
+      setPage(nextPage);
+      setHasMore(count ? to + 1 < count : (data || []).length === PAGE_SIZE);
+    }
     setLoading(false);
   }
 
   function onAreaChange(e) {
-    const value = e.target.value;
-    setAreaTag(value);
-    refetch(value, issueTag, q);
+    setAreaTag(e.target.value);
+    setPage(1);
+    fetchData({ reset: true });
   }
-
   function onIssueChange(e) {
-    const value = e.target.value;
-    setIssueTag(value);
-    refetch(areaTag, value, q);
+    setIssueTag(e.target.value);
+    setPage(1);
+    fetchData({ reset: true });
   }
-
   function onSearchChange(e) {
     const value = e.target.value;
     setQ(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      refetch(areaTag, issueTag, value);
+      setPage(1);
+      fetchData({ reset: true });
     }, 400);
   }
-
-  function clearSearch() {
+  function clearAll() {
     setQ("");
-    refetch(areaTag, issueTag, "");
+    setAreaTag("all");
+    setIssueTag("all");
+    setPage(1);
+    fetchData({ reset: true });
+  }
+
+  // highlight helper
+  function highlight(text, query) {
+    const t = String(text || "");
+    const qx = String(query || "").trim();
+    if (!qx) return t;
+    try {
+      const re = new RegExp(`(${qx.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig");
+      const parts = t.split(re);
+      return parts.map((p, i) =>
+        re.test(p) ? (
+          <mark key={i} style={{ background: "#fde68a" }}>
+            {p}
+          </mark>
+        ) : (
+          <span key={i}>{p}</span>
+        )
+      );
+    } catch {
+      return t;
+    }
   }
 
   return (
@@ -149,9 +193,9 @@ export default function Home({
           borderRadius: 12,
           boxShadow: "0 4px 10px rgba(0,0,0,0.05)",
           maxWidth: 980,
-          margin: "0 auto 20px auto",
+          margin: "0 auto 12px auto",
           display: "grid",
-          gridTemplateColumns: "1.2fr 1fr 1fr auto",
+          gridTemplateColumns: "1.2fr 1fr 1fr auto auto",
           gap: 12,
           alignItems: "center",
         }}
@@ -174,14 +218,12 @@ export default function Home({
                 background: "#f1f5f9",
               }}
             />
-            {q ? (
-              <button
-                onClick={clearSearch}
-                style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#e2e8f0" }}
-              >
-                Clear
-              </button>
-            ) : null}
+            <button
+              onClick={clearAll}
+              style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#e2e8f0" }}
+            >
+              Clear all
+            </button>
           </div>
         </div>
 
@@ -229,6 +271,11 @@ export default function Home({
           </select>
         </label>
 
+        {/* Result count */}
+        <div style={{ fontSize: 13, opacity: 0.8 }}>
+          {total === null ? "" : `${total} result${total === 1 ? "" : "s"}`}
+        </div>
+
         {loading && <span style={{ fontSize: 13 }}>Loading…</span>}
       </div>
 
@@ -247,12 +294,8 @@ export default function Home({
           Evidence Tray
         </h2>
 
-        {initialError && (
-          <p style={{ color: "#b91c1c" }}>Error: {initialError}</p>
-        )}
-        {records.length === 0 && !loading && (
-          <p>No records matched your filters.</p>
-        )}
+        {initialError && <p style={{ color: "#b91c1c" }}>Error: {initialError}</p>}
+        {records.length === 0 && !loading && <p>No records matched your filters.</p>}
 
         <div
           style={{
@@ -276,10 +319,10 @@ export default function Home({
                 }}
               >
                 <h3 style={{ marginTop: 0, marginBottom: 4, color: "#1e293b" }}>
-                  {r.title}
+                  {highlight(r.title, q)}
                 </h3>
                 <p style={{ marginTop: 0, marginBottom: 8, fontSize: 14, color: "#334155" }}>
-                  {r.summary}
+                  {highlight(r.summary, q)}
                 </p>
                 {tags.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
@@ -315,6 +358,25 @@ export default function Home({
             );
           })}
         </div>
+
+        {/* Load more */}
+        {hasMore && (
+          <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
+            <button
+              onClick={() => fetchData({ reset: false })}
+              disabled={loading}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: 0,
+                background: "#04143C",
+                color: "#fff",
+              }}
+            >
+              {loading ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        )}
       </section>
     </div>
   );

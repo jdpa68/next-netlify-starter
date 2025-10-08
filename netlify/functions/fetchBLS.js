@@ -1,38 +1,16 @@
-// netlify/functions/fetchBLS.js
-export async function handler(event) {
+// Fetch latest BLS series data (no key needed for light use)
+export const config = { path: "/getBLS" }; // /.netlify/functions/getBLS?series=CES6562140001
+
+export default async function handler(req, res) {
   try {
-    const series = event.queryStringParameters?.series || "CUUR0000SA0";
-    const start = event.queryStringParameters?.start || "2022";
-    const end = event.queryStringParameters?.end || "2025";
-
-    const payload = {
-      seriesid: [series],
-      startyear: start,
-      endyear: end,
-      registrationkey: process.env.BLS_API_KEY,
-    };
-
-    const resp = await fetch("https://api.bls.gov/publicAPI/v2/timeseries/data/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await resp.json();
-
-    return {
-      statusCode: resp.status,
-      headers: {
-        "content-type": "application/json",
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-      },
-      body: JSON.stringify(data, null, 2),
-    };
-  } catch (err) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
-    };
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const series = url.searchParams.get("series") || "CES6562140001";
+    const api = `https://api.bls.gov/publicAPI/v2/timeseries/data/${encodeURIComponent(series)}?latest=true`;
+    const r = await fetch(api);
+    const j = await r.json();
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).send(JSON.stringify({ series, data: j }, null, 2));
+  } catch (e) {
+    res.status(500).send(JSON.stringify({ error: e.message }));
   }
 }

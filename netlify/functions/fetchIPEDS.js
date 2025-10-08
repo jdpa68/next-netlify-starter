@@ -1,45 +1,26 @@
-// netlify/functions/fetchIPEDS.js
-// College Scorecard (IPEDS) proxy. Returns JSON results for a given school name.
-export async function handler(event) {
+// College Scorecard (IPEDS proxy). Requires API key in env: SCORECARD_KEY
+export const config = { path: "/fetchIPEDS" }; // /.netlify/functions/fetchIPEDS?unitid=217156
+
+export default async function handler(req, res) {
   try {
-    const school = event.queryStringParameters?.school || "";
-    const fields = event.queryStringParameters?.fields
-      || "id,school.name,school.city,school.state,latest.student.size,latest.admissions.admission_rate.overall,latest.completion.rate_suppressed.overall,latest.cost.tuition.in_state,latest.cost.tuition.out_of_state";
-
-    if (!school) {
-      return { statusCode: 400, body: "Missing 'school' query parameter" };
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const unitid = url.searchParams.get("unitid") || "217156";
+    const key = process.env.SCORECARD_KEY; // add in Netlify → Environment variables
+    if (!key) {
+      res.status(500).send(JSON.stringify({ error: "Missing SCORECARD_KEY env var" }));
+      return;
     }
-
-    const apiKey = process.env.DATA_GOV_KEY;
-    if (!apiKey) {
-      return { statusCode: 500, body: "Missing DATA_GOV_KEY environment variable" };
-    }
-
-    const params = new URLSearchParams({
-      "school.name": school,
-      "fields": fields,
-      "per_page": "5",
-      "api_key": apiKey
-    });
-
-    const url = `https://api.data.gov/ed/collegescorecard/v1/schools?${params.toString()}`;
-
-    const resp = await fetch(url);
-    const data = await resp.json();
-
-    return {
-      statusCode: resp.status,
-      headers: {
-        "content-type": "application/json",
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, OPTIONS"
-      },
-      body: JSON.stringify(data, null, 2)
-    };
-  } catch (err) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message })
-    };
+    const fields = [
+      "id","school.name","school.city","school.state","school.region_id",
+      "latest.student.enrollment.all","latest.admissions.admission_rate.overall",
+      "latest.cost.attendance.academic_year","latest.completion.rate_suppressed.overall"
+    ].join(",");
+    const api = `https://api.collegescorecard.ed.gov/v1/schools?id=${encodeURIComponent(unitid)}&api_key=${key}&fields=${fields}`;
+    const r = await fetch(api);
+    const j = await r.json();
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).send(JSON.stringify({ unitid, data: j }, null, 2));
+  } catch (e) {
+    res.status(500).send(JSON.stringify({ error: e.message }));
   }
 }

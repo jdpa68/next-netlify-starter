@@ -1,5 +1,6 @@
-// /.netlify/functions/fetchIPEDS?unitid=217156
-// College Scorecard via DATA_GOV_KEY
+// netlify/functions/fetchIPEDS.js
+// Route: /.netlify/functions/fetchIPEDS?unitid=217156
+// Requires Netlify env: DATA_GOV_KEY (College Scorecard API key)
 export const config = { path: "/fetchIPEDS" };
 
 export default async function handler(req, res) {
@@ -18,7 +19,6 @@ export default async function handler(req, res) {
     ].join(",");
 
     const api = `https://api.collegescorecard.ed.gov/v1/schools?id=${encodeURIComponent(unitid)}&api_key=${encodeURIComponent(key)}&fields=${encodeURIComponent(fields)}`;
-
     const r = await fetch(api, { headers: { Accept: "application/json" } });
     const text = await r.text();
     res.setHeader("Content-Type", "application/json");

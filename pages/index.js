@@ -1,8 +1,8 @@
 import Head from "next/head";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* ---------- Supabase client ---------- */
+/* Supabase client (reads Netlify env) */
 function getClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL,
@@ -10,50 +10,40 @@ function getClient() {
   );
 }
 
-/* ---------- Helpers ---------- */
-function toArray(maybe) {
-  if (!maybe) return [];
-  if (Array.isArray(maybe)) return maybe;
-  // handle "tag1, tag2, tag3"
-  return String(maybe)
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function extractPrefixedTags(rows, prefix) {
-  const set = new Set();
-  rows.forEach((r) => {
-    toArray(r.tags).forEach((t) => {
-      if (t.startsWith(prefix)) set.add(t);
-    });
-  });
-  return Array.from(set).sort();
-}
-
-function labelFromTag(tag, prefix) {
-  // "issue_student_outcomes" -> "Student Outcomes"
-  const core = tag.replace(prefix, "");
-  return core
-    .split("_")
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
-    .join(" ");
-}
-
-/* ---------- Server-side preload ---------- */
+/* Server-side: preload data + real tag lists */
 export async function getServerSideProps() {
   const supabase = getClient();
 
-  // 1) Fetch a larger slice just to harvest tags (cheap)
+  // Pull a larger slice to harvest real tags (no guesses)
   const { data: tagScan = [] } = await supabase
     .from("knowledge_base")
     .select("id, tags")
     .limit(500);
 
-  const areaTags = extractPrefixedTags(tagScan, "area_");
-  const issueTags = extractPrefixedTags(tagScan, "issue_");
+  const toArray = (v) =>
+    Array.isArray(v)
+      ? v
+      : String(v || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
 
-  // 2) Initial records to show
+  const areaSet = new Set();
+  const issueSet = new Set();
+  tagScan.forEach((r) =>
+    toArray(r.tags).forEach((t) => {
+      if (t.startsWith("area_")) areaSet.add(t);
+      if (t.startsWith("issue_")) issueSet.add(t);
+    })
+  );
+  const areaTags = Array.from(areaSet).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" })
+  );
+  const issueTags = Array.from(issueSet).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" })
+  );
+
+  // Initial page
   const { data: initialData = [], error } = await supabase
     .from("knowledge_base")
     .select("id, title, summary, tags, source_url")
@@ -69,7 +59,7 @@ export async function getServerSideProps() {
   };
 }
 
-/* ---------- Page ---------- */
+/* UI */
 export default function Home({
   initialData = [],
   initialError = null,
@@ -80,18 +70,36 @@ export default function Home({
   const [loading, setLoading] = useState(false);
   const [areaTag, setAreaTag] = useState("all");
   const [issueTag, setIssueTag] = useState("all");
+  const [q, setQ] = useState("");
+  const debounceRef = useRef(null);
 
-  async function refetch(nextArea = areaTag, nextIssue = issueTag) {
+  const toArray = (v) =>
+    Array.isArray(v)
+      ? v
+      : String(v || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+  async function refetch(nextArea = areaTag, nextIssue = issueTag, nextQ = q) {
     setLoading(true);
     const supabase = getClient();
 
     let query = supabase
       .from("knowledge_base")
       .select("id, title, summary, tags, source_url")
-      .limit(10);
+      .limit(20);
 
     if (nextArea !== "all") query = query.ilike("tags", `%${nextArea}%`);
     if (nextIssue !== "all") query = query.ilike("tags", `%${nextIssue}%`);
+
+    const like = String(nextQ || "").replace(/%/g, "").trim();
+    if (like) {
+      // search title OR summary OR tags
+      query = query.or(
+        `title.ilike.%${like}%,summary.ilike.%${like}%,tags.ilike.%${like}%`
+      );
+    }
 
     const { data, error } = await query;
     if (!error) setRecords(data || []);
@@ -99,45 +107,87 @@ export default function Home({
   }
 
   function onAreaChange(e) {
-    const val = e.target.value;
-    setAreaTag(val);
-    refetch(val, issueTag);
+    const value = e.target.value;
+    setAreaTag(value);
+    refetch(value, issueTag, q);
   }
 
   function onIssueChange(e) {
-    const val = e.target.value;
-    setIssueTag(val);
-    refetch(areaTag, val);
+    const value = e.target.value;
+    setIssueTag(value);
+    refetch(areaTag, value, q);
+  }
+
+  function onSearchChange(e) {
+    const value = e.target.value;
+    setQ(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      refetch(areaTag, issueTag, value);
+    }, 400);
+  }
+
+  function clearSearch() {
+    setQ("");
+    refetch(areaTag, issueTag, "");
   }
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 24, background: "#f8fafc" }}>
-      <Head>
-        <title>PeerQuest Lancelot Evidence Tray</title>
-      </Head>
+      <Head><title>PeerQuest Lancelot — Evidence Search</title></Head>
 
       <header style={{ borderBottom: "2px solid #0f172a", marginBottom: 24 }}>
         <h1 style={{ margin: 0, color: "#0f172a" }}>PeerQuest Lancelot</h1>
-        <p style={{ opacity: 0.7 }}>Evidence Tray • Dynamic Filters (from real tags)</p>
+        <p style={{ opacity: 0.7 }}>Evidence Tray • Search + Filters</p>
       </header>
 
-      {/* Filter Bar */}
+      {/* Search + Filters */}
       <div
         style={{
           background: "#ffffff",
           padding: "12px 16px",
           borderRadius: 12,
           boxShadow: "0 4px 10px rgba(0,0,0,0.05)",
-          maxWidth: 900,
+          maxWidth: 980,
           margin: "0 auto 20px auto",
           display: "grid",
-          gridTemplateColumns: "1fr 1fr auto",
+          gridTemplateColumns: "1.2fr 1fr 1fr auto",
           gap: 12,
           alignItems: "center",
         }}
       >
+        {/* Search */}
+        <div>
+          <label style={{ fontSize: 14, fontWeight: 600, display: "block", marginBottom: 6 }}>
+            Search (title, summary, tags)
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={q}
+              onChange={onSearchChange}
+              placeholder="e.g., transfer credit, Title IV, retention"
+              style={{
+                flex: 1,
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid #e2e8f0",
+                background: "#f1f5f9",
+              }}
+            />
+            {q ? (
+              <button
+                onClick={clearSearch}
+                style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#e2e8f0" }}
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Area */}
         <label style={{ fontSize: 14, fontWeight: 600 }}>
-          Area:
+          Area
           <select
             onChange={onAreaChange}
             value={areaTag}
@@ -147,20 +197,19 @@ export default function Home({
               borderRadius: 8,
               border: "1px solid #e2e8f0",
               background: "#f1f5f9",
-              minWidth: 220,
+              minWidth: 200,
             }}
           >
             <option value="all">All Areas</option>
             {areaTags.map((t) => (
-              <option key={t} value={t}>
-                {labelFromTag(t, "area_")}
-              </option>
+              <option key={t} value={t}>{t.replace("area_", "").replace(/_/g, " ")}</option>
             ))}
           </select>
         </label>
 
+        {/* Issue */}
         <label style={{ fontSize: 14, fontWeight: 600 }}>
-          Issue:
+          Issue
           <select
             onChange={onIssueChange}
             value={issueTag}
@@ -170,14 +219,12 @@ export default function Home({
               borderRadius: 8,
               border: "1px solid #e2e8f0",
               background: "#f1f5f9",
-              minWidth: 260,
+              minWidth: 220,
             }}
           >
             <option value="all">All Issues</option>
             {issueTags.map((t) => (
-              <option key={t} value={t}>
-                {labelFromTag(t, "issue_")}
-              </option>
+              <option key={t} value={t}>{t.replace("issue_", "").replace(/_/g, " ")}</option>
             ))}
           </select>
         </label>
@@ -192,7 +239,7 @@ export default function Home({
           background: "white",
           borderRadius: 16,
           boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
-          maxWidth: 900,
+          maxWidth: 980,
           margin: "0 auto",
         }}
       >
@@ -200,8 +247,12 @@ export default function Home({
           Evidence Tray
         </h2>
 
-        {initialError && <p style={{ color: "#b91c1c" }}>Error: {initialError}</p>}
-        {records.length === 0 && !loading && <p>No records found for this combination.</p>}
+        {initialError && (
+          <p style={{ color: "#b91c1c" }}>Error: {initialError}</p>
+        )}
+        {records.length === 0 && !loading && (
+          <p>No records matched your filters.</p>
+        )}
 
         <div
           style={{
@@ -212,25 +263,27 @@ export default function Home({
             paddingRight: 6,
           }}
         >
-          {records.map((r) => (
-            <div
-              key={r.id}
-              style={{
-                border: "1px solid #e2e8f0",
-                borderRadius: 12,
-                padding: 16,
-                background: "#ffffff",
-              }}
-            >
-              <h3 style={{ marginTop: 0, marginBottom: 4, color: "#1e293b" }}>{r.title}</h3>
-              <p style={{ marginTop: 0, marginBottom: 8, fontSize: 14, color: "#334155" }}>
-                {r.summary}
-              </p>
-              {r.tags && (
-                <div style={{ marginBottom: 8 }}>
-                  {toArray(r.tags)
-                    .slice(0, 4)
-                    .map((t, i) => (
+          {records.map((r) => {
+            const tags = toArray(r.tags);
+            return (
+              <div
+                key={r.id}
+                style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 12,
+                  padding: 16,
+                  background: "#ffffff",
+                }}
+              >
+                <h3 style={{ marginTop: 0, marginBottom: 4, color: "#1e293b" }}>
+                  {r.title}
+                </h3>
+                <p style={{ marginTop: 0, marginBottom: 8, fontSize: 14, color: "#334155" }}>
+                  {r.summary}
+                </p>
+                {tags.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    {tags.slice(0, 6).map((t, i) => (
                       <span
                         key={`${r.id}-${i}`}
                         style={{
@@ -246,28 +299,23 @@ export default function Home({
                         {t}
                       </span>
                     ))}
-                </div>
-              )}
-              {r.source_url && (
-                <a
-                  href={r.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: 13, color: "#2563eb" }}
-                >
-                  View source ↗
-                </a>
-              )}
-            </div>
-          ))}
+                  </div>
+                )}
+                {r.source_url && (
+                  <a
+                    href={r.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: 13, color: "#2563eb" }}
+                  >
+                    View source ↗
+                  </a>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
-
-      <footer
-        style={{ marginTop: 40, fontSize: 13, opacity: 0.6, textAlign: "center" }}
-      >
-        Lancelot • Netlify Demo • © {new Date().getFullYear()}
-      </footer>
     </div>
   );
 }

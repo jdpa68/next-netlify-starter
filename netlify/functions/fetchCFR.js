@@ -1,5 +1,6 @@
-// /.netlify/functions/fetchCFR?query=Title%20IV
-// GovInfo search (CFR) using GOVINFO_API_KEY
+// netlify/functions/fetchCFR.js
+// Route: /.netlify/functions/fetchCFR?query=Title%20IV
+// Requires Netlify env: GOVINFO_API_KEY
 export const config = { path: "/fetchCFR" };
 
 export default async function handler(req, res) {
@@ -9,9 +10,7 @@ export default async function handler(req, res) {
     const key = process.env.GOVINFO_API_KEY;
     if (!key) return res.status(500).json({ error: "Missing GOVINFO_API_KEY" });
 
-    // GovInfo search API (results across collections; we focus on CFR hits)
     const api = `https://api.govinfo.gov/search?api_key=${encodeURIComponent(key)}&pageSize=5&offset=0&q=${encodeURIComponent(q)}%20collection:CFR`;
-
     const r = await fetch(api, { headers: { Accept: "application/json" } });
     const j = await r.json();
 

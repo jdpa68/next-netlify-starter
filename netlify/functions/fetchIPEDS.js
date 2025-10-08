@@ -30,9 +30,10 @@ export default async function handler(req, res) {
     ].join(",");
 
     // data.gov College Scorecard endpoint (json)
-    const api = `https://api.data.gov/ed/collegescorecard/v1/schools?id=${encodeURIComponent(
-      unitid
-    )}&api_key=${encodeURIComponent(key)}&fields=${encodeURIComponent(fields)}`;
+    const api = `https://api.collegescorecard.ed.gov/v1/schools?id=${encodeURIComponent(
+  unitid
+)}&api_key=${encodeURIComponent(key)}&fields=${encodeURIComponent(fields)}`;
+
 
     const r = await fetch(api, { headers: { Accept: "application/json" } });
 

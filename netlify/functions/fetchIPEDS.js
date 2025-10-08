@@ -19,7 +19,7 @@ exports.handler = async function (event, context) {
       "latest.completion.rate_suppressed.overall"
     ].join(",");
 
-    const api = `https://api.collegescorecard.ed.gov/v1/schools?id=${encodeURIComponent(unitid)}&api_key=${encodeURIComponent(key)}&fields=${encodeURIComponent(fields)}`;
+    const api = `https://api.data.gov/ed/collegescorecard/v1/schools?id=${encodeURIComponent(unitid)}&api_key=${encodeURIComponent(key)}&fields=${encodeURIComponent(fields)}`;
     const response = await fetch(api, { headers: { Accept: "application/json" } });
     const text = await response.text();
 

@@ -1,5 +1,5 @@
 // Fetch latest BLS series data (no key needed for light use)
-export const config = { path: "/getBLS" }; // /.netlify/functions/getBLS?series=CES6562140001
+export const config = { path: "/fetchBLS" }; // /.netlify/functions/fetchBLS?series=CES6562140001
 
 export default async function handler(req, res) {
   try {

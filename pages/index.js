@@ -10,7 +10,7 @@ function getClient() {
   );
 }
 
-/* Server-side: preload + real tag lists */
+/* Server-side: tag lists + first page */
 export async function getServerSideProps() {
   const supabase = getClient();
 
@@ -65,6 +65,7 @@ export default function Home({
   areaTags = [],
   issueTags = [],
 }) {
+  /* Evidence tray state */
   const PAGE_SIZE = 20;
   const [records, setRecords] = useState(initialData);
   const [loading, setLoading] = useState(false);
@@ -76,6 +77,12 @@ export default function Home({
   const [page, setPage] = useState(1);
   const debounceRef = useRef(null);
 
+  /* API cards state */
+  const [ipedsUnitid, setIpedsUnitid] = useState("217156"); // example: Lindenwood
+  const [blsSeries, setBlsSeries] = useState("CES6562140001"); // example series id
+  const [cfrQuery, setCfrQuery] = useState("Title IV");
+  const [apiOut, setApiOut] = useState("");
+
   const toArray = (v) =>
     Array.isArray(v)
       ? v
@@ -84,6 +91,7 @@ export default function Home({
           .map((s) => s.trim())
           .filter(Boolean);
 
+  /* Evidence fetch helpers */
   function buildQuery(supabase, countOnly = false) {
     let sel = countOnly ? "id" : "id, title, summary, tags, source_url";
     let query = supabase.from("knowledge_base").select(sel, {
@@ -111,7 +119,7 @@ export default function Home({
     const { count } = await buildQuery(supabase, true);
     if (typeof count === "number") setTotal(count);
 
-    // data page
+    // page
     const nextPage = reset ? 1 : page + 1;
     const from = (nextPage - 1) * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
@@ -153,8 +161,6 @@ export default function Home({
     setPage(1);
     fetchData({ reset: true });
   }
-
-  // highlight helper
   function highlight(text, query) {
     const t = String(text || "");
     const qx = String(query || "").trim();
@@ -164,9 +170,7 @@ export default function Home({
       const parts = t.split(re);
       return parts.map((p, i) =>
         re.test(p) ? (
-          <mark key={i} style={{ background: "#fde68a" }}>
-            {p}
-          </mark>
+          <mark key={i} style={{ background: "#fde68a" }}>{p}</mark>
         ) : (
           <span key={i}>{p}</span>
         )
@@ -176,107 +180,206 @@ export default function Home({
     }
   }
 
+  /* API cards: call your Netlify functions */
+  async function callApi(url, body) {
+    setApiOut("Loading…");
+    try {
+      const res = await fetch(url, {
+        method: body ? "POST" : "GET",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const txt = await res.text();
+      setApiOut(txt);
+    } catch (e) {
+      setApiOut(`Error: ${e.message}`);
+    }
+  }
+
+  /* Buttons use your existing functions:
+     /.netlify/functions/getIPEDS?unitid=XXXX
+     /.netlify/functions/getBLS?series=XXXX
+     /.netlify/functions/getCFR?query=XXXX
+     (Adjust names if your function filenames differ.)
+  */
+
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 24, background: "#f8fafc" }}>
-      <Head><title>PeerQuest Lancelot — Evidence Search</title></Head>
+      <Head><title>PeerQuest Lancelot — Evidence + Live Data</title></Head>
 
       <header style={{ borderBottom: "2px solid #0f172a", marginBottom: 24 }}>
         <h1 style={{ margin: 0, color: "#0f172a" }}>PeerQuest Lancelot</h1>
-        <p style={{ opacity: 0.7 }}>Evidence Tray • Search + Filters</p>
+        <p style={{ opacity: 0.7 }}>Evidence Tray • Search + Live API Cards</p>
       </header>
 
-      {/* Search + Filters */}
+      {/* Top grid: Search/Filters + API Cards */}
       <div
         style={{
-          background: "#ffffff",
-          padding: "12px 16px",
-          borderRadius: 12,
-          boxShadow: "0 4px 10px rgba(0,0,0,0.05)",
-          maxWidth: 980,
-          margin: "0 auto 12px auto",
           display: "grid",
-          gridTemplateColumns: "1.2fr 1fr 1fr auto auto",
-          gap: 12,
-          alignItems: "center",
+          gridTemplateColumns: "1.3fr 0.7fr",
+          gap: 16,
+          alignItems: "start",
+          maxWidth: 1200,
+          margin: "0 auto",
         }}
       >
-        {/* Search */}
-        <div>
-          <label style={{ fontSize: 14, fontWeight: 600, display: "block", marginBottom: 6 }}>
-            Search (title, summary, tags)
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              value={q}
-              onChange={onSearchChange}
-              placeholder="e.g., transfer credit, Title IV, retention"
-              style={{
-                flex: 1,
-                padding: "8px 10px",
-                borderRadius: 8,
-                border: "1px solid #e2e8f0",
-                background: "#f1f5f9",
-              }}
-            />
-            <button
-              onClick={clearAll}
-              style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#e2e8f0" }}
-            >
-              Clear all
-            </button>
+        {/* Left column: Search + Filters */}
+        <div
+          style={{
+            background: "#ffffff",
+            padding: "12px 16px",
+            borderRadius: 12,
+            boxShadow: "0 4px 10px rgba(0,0,0,0.05)",
+          }}
+        >
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr auto", gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 14, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Search (title, summary, tags)
+              </label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={q}
+                  onChange={onSearchChange}
+                  placeholder="e.g., transfer credit, Title IV, retention"
+                  style={{
+                    flex: 1,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px solid #e2e8f0",
+                    background: "#f1f5f9",
+                  }}
+                />
+                <button
+                  onClick={clearAll}
+                  style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#e2e8f0" }}
+                >
+                  Clear all
+                </button>
+              </div>
+            </div>
+
+            <label style={{ fontSize: 14, fontWeight: 600 }}>
+              Area
+              <select
+                onChange={onAreaChange}
+                value={areaTag}
+                style={{
+                  marginLeft: 10,
+                  padding: "6px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #e2e8f0",
+                  background: "#f1f5f9",
+                  minWidth: 200,
+                }}
+              >
+                <option value="all">All Areas</option>
+                {areaTags.map((t) => (
+                  <option key={t} value={t}>{t.replace("area_", "").replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ fontSize: 14, fontWeight: 600 }}>
+              Issue
+              <select
+                onChange={onIssueChange}
+                value={issueTag}
+                style={{
+                  marginLeft: 10,
+                  padding: "6px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #e2e8f0",
+                  background: "#f1f5f9",
+                  minWidth: 220,
+                }}
+              >
+                <option value="all">All Issues</option>
+                {issueTags.map((t) => (
+                  <option key={t} value={t}>{t.replace("issue_", "").replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            </label>
+
+            <div style={{ fontSize: 13, opacity: 0.8 }}>
+              {total === null ? "" : `${total} result${total === 1 ? "" : "s"}`}
+            </div>
           </div>
         </div>
 
-        {/* Area */}
-        <label style={{ fontSize: 14, fontWeight: 600 }}>
-          Area
-          <select
-            onChange={onAreaChange}
-            value={areaTag}
-            style={{
-              marginLeft: 10,
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              background: "#f1f5f9",
-              minWidth: 200,
-            }}
-          >
-            <option value="all">All Areas</option>
-            {areaTags.map((t) => (
-              <option key={t} value={t}>{t.replace("area_", "").replace(/_/g, " ")}</option>
-            ))}
-          </select>
-        </label>
+        {/* Right column: Live API cards */}
+        <div
+          style={{
+            background: "#ffffff",
+            padding: "12px 16px",
+            borderRadius: 12,
+            boxShadow: "0 4px 10px rgba(0,0,0,0.05)",
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>Live Data (API)</h3>
 
-        {/* Issue */}
-        <label style={{ fontSize: 14, fontWeight: 600 }}>
-          Issue
-          <select
-            onChange={onIssueChange}
-            value={issueTag}
-            style={{
-              marginLeft: 10,
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              background: "#f1f5f9",
-              minWidth: 220,
-            }}
-          >
-            <option value="all">All Issues</option>
-            {issueTags.map((t) => (
-              <option key={t} value={t}>{t.replace("issue_", "").replace(/_/g, " ")}</option>
-            ))}
-          </select>
-        </label>
+          {/* IPEDS */}
+          <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+            <strong>IPEDS</strong>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input
+                value={ipedsUnitid}
+                onChange={(e) => setIpedsUnitid(e.target.value)}
+                placeholder="unitid (e.g., 217156)"
+                style={{ flex: 1, padding: 8, border: "1px solid #e2e8f0", borderRadius: 8 }}
+              />
+              <button
+                onClick={() => callApi(`/.netlify/functions/getIPEDS?unitid=${encodeURIComponent(ipedsUnitid)}`)}
+                style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#04143C", color: "#fff" }}
+              >
+                Fetch IPEDS
+              </button>
+            </div>
+          </div>
 
-        {/* Result count */}
-        <div style={{ fontSize: 13, opacity: 0.8 }}>
-          {total === null ? "" : `${total} result${total === 1 ? "" : "s"}`}
+          {/* BLS */}
+          <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+            <strong>BLS</strong>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input
+                value={blsSeries}
+                onChange={(e) => setBlsSeries(e.target.value)}
+                placeholder="series id (e.g., CES6562140001)"
+                style={{ flex: 1, padding: 8, border: "1px solid #e2e8f0", borderRadius: 8 }}
+              />
+              <button
+                onClick={() => callApi(`/.netlify/functions/getBLS?series=${encodeURIComponent(blsSeries)}`)}
+                style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#04143C", color: "#fff" }}
+              >
+                Fetch BLS
+              </button>
+            </div>
+          </div>
+
+          {/* CFR / Federal rules */}
+          <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, padding: 12 }}>
+            <strong>CFR / Federal Rules</strong>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input
+                value={cfrQuery}
+                onChange={(e) => setCfrQuery(e.target.value)}
+                placeholder="keyword (e.g., Title IV)"
+                style={{ flex: 1, padding: 8, border: "1px solid #e2e8f0", borderRadius: 8 }}
+              />
+              <button
+                onClick={() => callApi(`/.netlify/functions/getCFR?query=${encodeURIComponent(cfrQuery)}`)}
+                style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#04143C", color: "#fff" }}
+              >
+                Fetch CFR
+              </button>
+            </div>
+          </div>
+
+          {/* Output */}
+          <pre style={{ marginTop: 12, background: "#0b1225", color: "#d2d6f3", padding: 12, borderRadius: 10, maxHeight: 240, overflow: "auto" }}>
+{apiOut || "API output will appear here…"}
+          </pre>
         </div>
-
-        {loading && <span style={{ fontSize: 13 }}>Loading…</span>}
       </div>
 
       {/* Evidence Tray */}
@@ -286,8 +389,8 @@ export default function Home({
           background: "white",
           borderRadius: 16,
           boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
-          maxWidth: 980,
-          margin: "0 auto",
+          maxWidth: 1200,
+          margin: "16px auto 0",
         }}
       >
         <h2 style={{ marginTop: 0, borderBottom: "1px solid #e2e8f0", paddingBottom: 8 }}>
@@ -365,13 +468,7 @@ export default function Home({
             <button
               onClick={() => fetchData({ reset: false })}
               disabled={loading}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: 0,
-                background: "#04143C",
-                color: "#fff",
-              }}
+              style={{ padding: "10px 14px", borderRadius: 10, border: 0, background: "#04143C", color: "#fff" }}
             >
               {loading ? "Loading…" : "Load more"}
             </button>

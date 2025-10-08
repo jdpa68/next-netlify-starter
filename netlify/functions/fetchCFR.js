@@ -1,24 +1,31 @@
-// Federal Register search (proxy for CFR/federal rules lookups)
-export const config = { path: "/fetchCFR" }; // /.netlify/functions/fetchCFR?query=Title%20IV
+// /.netlify/functions/fetchCFR?query=Title%20IV
+// GovInfo search (CFR) using GOVINFO_API_KEY
+export const config = { path: "/fetchCFR" };
 
 export default async function handler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const q = url.searchParams.get("query") || "Title IV";
-    const api = `https://www.federalregister.gov/api/v1/documents.json?per_page=5&order=newest&conditions[term]=${encodeURIComponent(q)}`;
-    const r = await fetch(api);
+    const key = process.env.GOVINFO_API_KEY;
+    if (!key) return res.status(500).json({ error: "Missing GOVINFO_API_KEY" });
+
+    // GovInfo search API (results across collections; we focus on CFR hits)
+    const api = `https://api.govinfo.gov/search?api_key=${encodeURIComponent(key)}&pageSize=5&offset=0&q=${encodeURIComponent(q)}%20collection:CFR`;
+
+    const r = await fetch(api, { headers: { Accept: "application/json" } });
     const j = await r.json();
-    // return a compact list
+
     const items = (j?.results || []).map(d => ({
       title: d.title,
-      agency_names: d.agency_names,
-      publication_date: d.publication_date,
-      citation: d.citation || d.document_number,
-      url: d.html_url
+      collection: d.collectionName,
+      date: d.dateIssued || d.date,
+      citation: d.citation || d.granuleId || d.packageId,
+      url: d.download || d.pdfLink || d.htmlLink || d.packageLink
     }));
+
     res.setHeader("Content-Type", "application/json");
     res.status(200).send(JSON.stringify({ query: q, results: items }, null, 2));
   } catch (e) {
-    res.status(500).send(JSON.stringify({ error: e.message }));
+    res.status(500).json({ error: e.message });
   }
 }

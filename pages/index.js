@@ -197,9 +197,9 @@ export default function Home({
   }
 
   /* Buttons use your existing functions:
-     /.netlify/functions/getIPEDS?unitid=XXXX
-     /.netlify/functions/getBLS?series=XXXX
-     /.netlify/functions/getCFR?query=XXXX
+     /.netlify/functions/fetchIPEDS?unitid=XXXX
+     /.netlify/functions/fetchBLS?series=XXXX
+     /.netlify/functions/fetchCFR?query=XXXX
      (Adjust names if your function filenames differ.)
   */
 
@@ -329,7 +329,7 @@ export default function Home({
                 style={{ flex: 1, padding: 8, border: "1px solid #e2e8f0", borderRadius: 8 }}
               />
               <button
-                onClick={() => callApi(`/.netlify/functions/getIPEDS?unitid=${encodeURIComponent(ipedsUnitid)}`)}
+                onClick={() => callApi(`/.netlify/functions/fetchIPEDS?unitid=${encodeURIComponent(ipedsUnitid)}`)}
                 style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#04143C", color: "#fff" }}
               >
                 Fetch IPEDS
@@ -348,7 +348,7 @@ export default function Home({
                 style={{ flex: 1, padding: 8, border: "1px solid #e2e8f0", borderRadius: 8 }}
               />
               <button
-                onClick={() => callApi(`/.netlify/functions/getBLS?series=${encodeURIComponent(blsSeries)}`)}
+                onClick={() => callApi(`/.netlify/functions/fetchBLS?series=${encodeURIComponent(blsSeries)}`)}
                 style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#04143C", color: "#fff" }}
               >
                 Fetch BLS
@@ -367,7 +367,7 @@ export default function Home({
                 style={{ flex: 1, padding: 8, border: "1px solid #e2e8f0", borderRadius: 8 }}
               />
               <button
-                onClick={() => callApi(`/.netlify/functions/getCFR?query=${encodeURIComponent(cfrQuery)}`)}
+                onClick={() => callApi(`/.netlify/functions/fetchCFR?query=${encodeURIComponent(cfrQuery)}`)}
                 style={{ padding: "8px 12px", borderRadius: 8, border: 0, background: "#04143C", color: "#fff" }}
               >
                 Fetch CFR

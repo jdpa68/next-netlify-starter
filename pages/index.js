@@ -1,19 +1,11 @@
 // ===========================================
-// Lancelot Evidence Tray + Sandbox Panel
+// Lancelot Evidence Tray + Sandbox Panel + Auth (Email/Password)
 // Drop-in replacement for pages/index.js
-// Requirements (already set earlier):
-//   • NEXT_PUBLIC_SUPABASE_URL
-//   • NEXT_PUBLIC_SUPABASE_ANON_KEY
-//   • Netlify functions:
-//       /.netlify/functions/sandbox-createUpload
-//       /.netlify/functions/sandbox-finalize
-//       /.netlify/functions/sandbox-download
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ----- Supabase client (browser, uses anon key and user session) -----
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -21,23 +13,18 @@ const supabase = createClient(
 
 const PAGE_SIZE = 20;
 
-/* ============================================================
-   Page Component
-============================================================ */
 export default function Home() {
-  // ---------------- Evidence Tray state ----------------
+  // -------- Evidence Tray state --------
   const [area, setArea] = useState("");
   const [issue, setIssue] = useState("");
   const [dissertationsOnly, setDissertationsOnly] = useState(false);
   const [q, setQ] = useState("");
-
   const [rows, setRows] = useState([]);
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // Canonical lists (12 Areas + 5 Issues)
   const AREAS = [
     "area_enrollment",
     "area_marketing",
@@ -60,7 +47,7 @@ export default function Home() {
     "issue_compliance",
   ];
 
-  // ---------------- Sandbox state ----------------
+  // -------- Sandbox/Auth state --------
   const [session, setSession] = useState(null);
   const [sbErr, setSbErr] = useState("");
   const [files, setFiles] = useState([]);
@@ -68,7 +55,13 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
 
-  // ================= Evidence Tray effects =================
+  // Simple auth form
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMsg, setAuthMsg] = useState("");
+
+  // ===== Evidence Tray effects =====
   useEffect(() => {
     const fetchResults = async () => {
       setLoading(true);
@@ -120,7 +113,7 @@ export default function Home() {
     fn(val);
   };
 
-  // ================= Sandbox helpers =================
+  // ===== Sandbox helpers =====
   const loadSession = async () => {
     const { data } = await supabase.auth.getSession();
     setSession(data?.session || null);
@@ -132,7 +125,7 @@ export default function Home() {
     try {
       const { data, error } = await supabase
         .from("sandbox_files")
-        .select("id, file_key, original_name, mime, size_bytes, created_at, expires_at, status")
+        .select("id,file_key,original_name,mime,size_bytes,created_at,expires_at,status")
         .order("created_at", { ascending: false })
         .limit(100);
       if (error) throw error;
@@ -162,9 +155,43 @@ export default function Home() {
     const h = Math.floor(ms / (1000 * 60 * 60));
     const m = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
     return `Deletes in ${h}h ${m}m`;
-    };
+  };
 
-  // Upload flow: 1) createUpload → 2) PUT to signed URL → 3) finalize
+  // ===== Auth actions =====
+  const onSignIn = async () => {
+    setAuthBusy(true);
+    setAuthMsg("");
+    setSbErr("");
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      setAuthMsg("Signed in.");
+      await loadSession();
+      await loadMyFiles();
+    } catch (e) {
+      setAuthMsg(e.message || "Sign-in failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const onSignOut = async () => {
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      await supabase.auth.signOut();
+      setEmail("");
+      setPassword("");
+      setFiles([]);
+      setSession(null);
+    } catch (e) {
+      setAuthMsg(e.message || "Sign-out failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  // ===== Upload flow =====
   const doUpload = async (file) => {
     if (!session) {
       setSbErr("Please sign in to upload.");
@@ -173,12 +200,10 @@ export default function Home() {
     setUploading(true);
     setSbErr("");
     try {
-      // 1) create upload URL
+      // 1) Request signed upload URL
       const res1 = await fetch("/.netlify/functions/sandbox-createUpload", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           filename: file.name,
           mime: file.type || "application/octet-stream",
@@ -189,19 +214,17 @@ export default function Home() {
       if (!res1.ok) throw new Error(data1 || "Failed to create upload URL");
       const { uploadUrl, fileKey } = data1;
 
-      // 2) PUT to signed URL
+      // 2) PUT file to signed URL
       const resPut = await fetch(uploadUrl, { method: "PUT", body: file });
       if (!resPut.ok) {
         const text = await resPut.text();
         throw new Error(`Upload failed: ${text || resPut.status}`);
       }
 
-      // 3) finalize metadata row
+      // 3) Finalize metadata
       const res2 = await fetch("/.netlify/functions/sandbox-finalize", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           fileKey,
           original_name: file.name,
@@ -212,7 +235,6 @@ export default function Home() {
       const data2 = await res2.json();
       if (!res2.ok) throw new Error(data2 || "Finalize failed");
 
-      // refresh list
       await loadMyFiles();
     } catch (e) {
       setSbErr(e.message || "Upload failed.");
@@ -225,7 +247,6 @@ export default function Home() {
   const onPickFile = async (e) => {
     const file = e.target?.files?.[0];
     if (!file) return;
-    // Guardrails (light)
     const MAX = 50 * 1024 * 1024; // 50MB
     if (file.size > MAX) {
       setSbErr("File exceeds 50MB limit.");
@@ -276,18 +297,58 @@ export default function Home() {
     }
   };
 
-  // ======= UI =======
+  // ===== UI =====
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
       <div className="max-w-6xl mx-auto space-y-8">
-
-        {/* ===================== Sandbox Panel (Step 3.0) ===================== */}
+        {/* Sandbox Panel with Auth */}
         <section className="rounded-2xl border bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h2 className="text-xl font-semibold">Sandbox (24-hour temporary storage)</h2>
             <span className="text-xs text-gray-500">
-              Files auto-delete after 24 hours. Allowed: PDF, DOCX, XLSX, CSV, TXT, ZIP, PNG/JPG (≤50MB).
+              Files auto-delete after 24h. Allowed: PDF, DOCX, XLSX, CSV, TXT, ZIP, PNG/JPG (≤50MB).
             </span>
+          </div>
+
+          {/* Auth row */}
+          <div className="mt-3 flex items-center gap-3 flex-wrap">
+            {!session ? (
+              <>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Email"
+                  className="rounded-xl border px-3 py-2"
+                />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Password"
+                  className="rounded-xl border px-3 py-2"
+                />
+                <button
+                  onClick={onSignIn}
+                  disabled={authBusy}
+                  className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50"
+                >
+                  {authBusy ? "Signing in…" : "Sign in"}
+                </button>
+                {authMsg && <span className="text-sm text-gray-600">{authMsg}</span>}
+              </>
+            ) : (
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-gray-700">Signed in</span>
+                <button
+                  onClick={onSignOut}
+                  disabled={authBusy}
+                  className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50"
+                >
+                  {authBusy ? "Signing out…" : "Sign out"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Upload controls */}
@@ -307,17 +368,15 @@ export default function Home() {
             >
               Refresh
             </button>
-            {!session && (
-              <span className="text-sm text-gray-600">
-                Please sign in to use the sandbox.
-              </span>
-            )}
             {uploading && <span className="text-sm">Uploading…</span>}
           </div>
 
           {/* Errors */}
           {sbErr && (
             <div className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>
+          )}
+          {authMsg && session && (
+            <div className="mt-1 text-sm text-green-700">{authMsg}</div>
           )}
 
           {/* My Files list */}
@@ -359,7 +418,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ===================== Evidence Tray (unchanged) ===================== */}
+        {/* Evidence Tray (unchanged) */}
         <header className="space-y-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Evidence Tray</h1>
           <p className="text-sm md:text-base">
@@ -410,7 +469,8 @@ export default function Home() {
 
           <button
             onClick={() => {
-              setArea(""); setIssue(""); setDissertationsOnly(false); setQ(""); setPage(1);
+              setArea(""); setIssue("");
+              setDissertationsOnly(false); setQ(""); setPage(1);
               if (typeof window !== "undefined") window.scrollTo(0, 0);
             }}
             className="rounded-xl border px-3 py-2 bg-white"
@@ -429,7 +489,10 @@ export default function Home() {
         {/* Results */}
         <section className="grid grid-cols-1 gap-4">
           {rows.map((r) => (
-            <article key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
+            <article
+              key={r.id}
+              className="rounded-2xl border bg-white p-4 shadow-sm"
+            >
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-lg font-semibold">{r.title}</h2>
                 {r.is_dissertation && (
@@ -440,22 +503,41 @@ export default function Home() {
                 <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>
               )}
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                {r.area_primary && <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>}
-                {r.area_secondary && <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>}
-                {r.issue_primary && <span className="px-2 py-1 rounded-full border">{r.issue_primary}</span>}
-                {r.issue_secondary && <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>}
+                {r.area_primary && (
+                  <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>
+                )}
+                {r.area_secondary && (
+                  <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>
+                )}
+                {r.issue_primary && (
+                  <span className="px-2 py-1 rounded-full border">{r.issue_primary}</span>
+                )}
+                {r.issue_secondary && (
+                  <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>
+                )}
               </div>
               <div className="mt-3 flex items-center gap-3 text-xs">
                 {r.source_url && (
-                  <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">Open source</a>
+                  <a
+                    href={r.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    Open source
+                  </a>
                 )}
-                {r.tags && <span className="text-gray-500 truncate">tags: {r.tags}</span>}
+                {r.tags && (
+                  <span className="text-gray-500 truncate">tags: {r.tags}</span>
+                )}
               </div>
             </article>
           ))}
 
           {!loading && rows.length === 0 && (
-            <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>
+            <div className="text-sm text-gray-500">
+              No results. Try adjusting filters.
+            </div>
           )}
         </section>
 

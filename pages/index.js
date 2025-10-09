@@ -1,11 +1,19 @@
 // ===========================================
-// Lancelot Evidence Tray — index.js (12 Areas + 5 Issues)
-// Search input fix (+ Refresh button).
+// Lancelot Evidence Tray + Sandbox Panel
+// Drop-in replacement for pages/index.js
+// Requirements (already set earlier):
+//   • NEXT_PUBLIC_SUPABASE_URL
+//   • NEXT_PUBLIC_SUPABASE_ANON_KEY
+//   • Netlify functions:
+//       /.netlify/functions/sandbox-createUpload
+//       /.netlify/functions/sandbox-finalize
+//       /.netlify/functions/sandbox-download
 // ===========================================
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// ----- Supabase client (browser, uses anon key and user session) -----
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -13,30 +21,11 @@ const supabase = createClient(
 
 const PAGE_SIZE = 20;
 
-const CANON_AREAS = [
-  "area_enrollment",
-  "area_marketing",
-  "area_finance",
-  "area_financial_aid",
-  "area_leadership",
-  "area_advising_registrar",
-  "area_it",
-  "area_curriculum_instruction",
-  "area_regional_accreditation",
-  "area_national_accreditation",
-  "area_opm",
-  "area_career_colleges",
-];
-
-const CANON_ISSUES = [
-  "issue_declining_enrollment",
-  "issue_student_success",
-  "issue_academic_quality",
-  "issue_cost_pricing",
-  "issue_compliance",
-];
-
+/* ============================================================
+   Page Component
+============================================================ */
 export default function Home() {
+  // ---------------- Evidence Tray state ----------------
   const [area, setArea] = useState("");
   const [issue, setIssue] = useState("");
   const [dissertationsOnly, setDissertationsOnly] = useState(false);
@@ -48,7 +37,38 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // Fetch results on any filter change
+  // Canonical lists (12 Areas + 5 Issues)
+  const AREAS = [
+    "area_enrollment",
+    "area_marketing",
+    "area_finance",
+    "area_financial_aid",
+    "area_leadership",
+    "area_advising_registrar",
+    "area_it",
+    "area_curriculum_instruction",
+    "area_regional_accreditation",
+    "area_national_accreditation",
+    "area_opm",
+    "area_career_colleges",
+  ];
+  const ISSUES = [
+    "issue_declining_enrollment",
+    "issue_student_success",
+    "issue_academic_quality",
+    "issue_cost_pricing",
+    "issue_compliance",
+  ];
+
+  // ---------------- Sandbox state ----------------
+  const [session, setSession] = useState(null);
+  const [sbErr, setSbErr] = useState("");
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // ================= Evidence Tray effects =================
   useEffect(() => {
     const fetchResults = async () => {
       setLoading(true);
@@ -64,22 +84,15 @@ export default function Home() {
             { count: "exact" }
           );
 
-        if (area) {
-          query = query.or(`area_primary.eq.${area},area_secondary.eq.${area}`);
-        }
-        if (issue) {
-          query = query.or(`issue_primary.eq.${issue},issue_secondary.eq.${issue}`);
-        }
-        if (dissertationsOnly) {
-          query = query.eq("is_dissertation", true);
-        }
+        if (area) query = query.or(`area_primary.eq.${area},area_secondary.eq.${area}`);
+        if (issue) query = query.or(`issue_primary.eq.${issue},issue_secondary.eq.${issue}`);
+        if (dissertationsOnly) query = query.eq("is_dissertation", true);
         if (q && q.trim().length > 0) {
           const term = q.trim();
           query = query.or(`title.ilike.%${term}%,summary.ilike.%${term}%`);
         }
 
         query = query.order("id", { ascending: false }).range(from, to);
-
         const { data, error, count: total } = await query;
         if (error) throw error;
 
@@ -97,28 +110,256 @@ export default function Home() {
     fetchResults();
   }, [area, issue, dissertationsOnly, q, page]);
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil((count || 0) / PAGE_SIZE)), [count]);
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil((count || 0) / PAGE_SIZE)),
+    [count]
+  );
 
-  // Helpers that always reset to page 1
-  const onAreaChange = (value) => { setPage(1); setArea(value); };
-  const onIssueChange = (value) => { setPage(1); setIssue(value); };
-  const onDissToggle = (checked) => { setPage(1); setDissertationsOnly(checked); };
-  // IMPORTANT FIX: read e.target.value for text input
-  const onSearchChange = (e) => { setPage(1); setQ(e.target.value); };
-
-  const refreshAll = () => {
-    setArea("");
-    setIssue("");
-    setDissertationsOnly(false);
-    setQ("");
+  const resetPageAnd = (fn) => (val) => {
     setPage(1);
-    // hard reload as a fallback (optional)
-    if (typeof window !== "undefined") window.scrollTo(0, 0);
+    fn(val);
   };
 
+  // ================= Sandbox helpers =================
+  const loadSession = async () => {
+    const { data } = await supabase.auth.getSession();
+    setSession(data?.session || null);
+  };
+
+  const loadMyFiles = async () => {
+    setBusy(true);
+    setSbErr("");
+    try {
+      const { data, error } = await supabase
+        .from("sandbox_files")
+        .select("id, file_key, original_name, mime, size_bytes, created_at, expires_at, status")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+      setFiles(data || []);
+    } catch (e) {
+      setSbErr(e.message || "Failed to load files.");
+      setFiles([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Load session + files on mount and when auth changes
+  useEffect(() => {
+    loadSession().then(loadMyFiles);
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+      setSession(sess);
+      loadMyFiles();
+    });
+    return () => sub.subscription?.unsubscribe();
+  }, []);
+
+  const countdownText = (expiresAt) => {
+    if (!expiresAt) return "";
+    const ms = new Date(expiresAt).getTime() - Date.now();
+    if (ms <= 0) return "deleting soon…";
+    const h = Math.floor(ms / (1000 * 60 * 60));
+    const m = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+    return `Deletes in ${h}h ${m}m`;
+    };
+
+  // Upload flow: 1) createUpload → 2) PUT to signed URL → 3) finalize
+  const doUpload = async (file) => {
+    if (!session) {
+      setSbErr("Please sign in to upload.");
+      return;
+    }
+    setUploading(true);
+    setSbErr("");
+    try {
+      // 1) create upload URL
+      const res1 = await fetch("/.netlify/functions/sandbox-createUpload", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          filename: file.name,
+          mime: file.type || "application/octet-stream",
+          size: file.size || 0,
+        }),
+      });
+      const data1 = await res1.json();
+      if (!res1.ok) throw new Error(data1 || "Failed to create upload URL");
+      const { uploadUrl, fileKey } = data1;
+
+      // 2) PUT to signed URL
+      const resPut = await fetch(uploadUrl, { method: "PUT", body: file });
+      if (!resPut.ok) {
+        const text = await resPut.text();
+        throw new Error(`Upload failed: ${text || resPut.status}`);
+      }
+
+      // 3) finalize metadata row
+      const res2 = await fetch("/.netlify/functions/sandbox-finalize", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          fileKey,
+          original_name: file.name,
+          mime: file.type || "application/octet-stream",
+          size: file.size || 0,
+        }),
+      });
+      const data2 = await res2.json();
+      if (!res2.ok) throw new Error(data2 || "Finalize failed");
+
+      // refresh list
+      await loadMyFiles();
+    } catch (e) {
+      setSbErr(e.message || "Upload failed.");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const onPickFile = async (e) => {
+    const file = e.target?.files?.[0];
+    if (!file) return;
+    // Guardrails (light)
+    const MAX = 50 * 1024 * 1024; // 50MB
+    if (file.size > MAX) {
+      setSbErr("File exceeds 50MB limit.");
+      e.target.value = "";
+      return;
+    }
+    await doUpload(file);
+  };
+
+  const doDownload = async (fileKey) => {
+    if (!session) return;
+    setBusy(true);
+    setSbErr("");
+    try {
+      const url = new URL("/.netlify/functions/sandbox-download", window.location.origin);
+      url.searchParams.set("file_key", fileKey);
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data || "Download link failed");
+      window.open(data.downloadUrl, "_blank");
+    } catch (e) {
+      setSbErr(e.message || "Download failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doDelete = async (row) => {
+    setBusy(true);
+    setSbErr("");
+    try {
+      // Remove from storage
+      const { error: sErr } = await supabase.storage.from("sandbox").remove([row.file_key]);
+      if (sErr) throw sErr;
+      // Mark row deleted
+      const { error: dErr } = await supabase
+        .from("sandbox_files")
+        .update({ status: "deleted" })
+        .eq("id", row.id);
+      if (dErr) throw dErr;
+      await loadMyFiles();
+    } catch (e) {
+      setSbErr(e.message || "Delete failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ======= UI =======
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto space-y-8">
+
+        {/* ===================== Sandbox Panel (Step 3.0) ===================== */}
+        <section className="rounded-2xl border bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="text-xl font-semibold">Sandbox (24-hour temporary storage)</h2>
+            <span className="text-xs text-gray-500">
+              Files auto-delete after 24 hours. Allowed: PDF, DOCX, XLSX, CSV, TXT, ZIP, PNG/JPG (≤50MB).
+            </span>
+          </div>
+
+          {/* Upload controls */}
+          <div className="mt-3 flex items-center gap-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={onPickFile}
+              className="rounded-xl border px-3 py-2"
+              disabled={!session || uploading}
+            />
+            <button
+              onClick={loadMyFiles}
+              disabled={busy}
+              className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50"
+              title="Refresh list"
+            >
+              Refresh
+            </button>
+            {!session && (
+              <span className="text-sm text-gray-600">
+                Please sign in to use the sandbox.
+              </span>
+            )}
+            {uploading && <span className="text-sm">Uploading…</span>}
+          </div>
+
+          {/* Errors */}
+          {sbErr && (
+            <div className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>
+          )}
+
+          {/* My Files list */}
+          <div className="mt-4 grid grid-cols-1 gap-3">
+            {files.length === 0 && (
+              <div className="text-sm text-gray-500">No uploads yet.</div>
+            )}
+
+            {files.map((f) => (
+              <div key={f.id} className="flex items-center justify-between rounded-xl border p-3">
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{f.original_name}</div>
+                  <div className="text-xs text-gray-500">
+                    {(f.size_bytes ?? 0).toLocaleString()} bytes · {f.mime || "file"} ·{" "}
+                    <span className="text-gray-600">{countdownText(f.expires_at)}</span>
+                    {f.status !== "active" && (
+                      <span className="ml-2 text-red-600">({f.status})</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => doDownload(f.file_key)}
+                    disabled={busy || f.status !== "active"}
+                    className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50"
+                  >
+                    Download
+                  </button>
+                  <button
+                    onClick={() => doDelete(f)}
+                    disabled={busy}
+                    className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ===================== Evidence Tray (unchanged) ===================== */}
         <header className="space-y-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Evidence Tray</h1>
           <p className="text-sm md:text-base">
@@ -131,29 +372,29 @@ export default function Home() {
           <input
             type="text"
             value={q}
-            onChange={onSearchChange}
+            onChange={(e) => resetPageAnd(setQ)(e.target.value)}
             placeholder="Search title or summary…"
             className="md:col-span-2 w-full rounded-xl border px-3 py-2"
           />
 
           <select
             value={area}
-            onChange={(e) => onAreaChange(e.target.value)}
+            onChange={(e) => resetPageAnd(setArea)(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
             <option value="">All Areas</option>
-            {CANON_AREAS.map((a) => (
+            {AREAS.map((a) => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
 
           <select
             value={issue}
-            onChange={(e) => onIssueChange(e.target.value)}
+            onChange={(e) => resetPageAnd(setIssue)(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
             <option value="">All Issues</option>
-            {CANON_ISSUES.map((i) => (
+            {ISSUES.map((i) => (
               <option key={i} value={i}>{i}</option>
             ))}
           </select>
@@ -162,13 +403,16 @@ export default function Home() {
             <input
               type="checkbox"
               checked={dissertationsOnly}
-              onChange={(e) => onDissToggle(e.target.checked)}
+              onChange={(e) => resetPageAnd(setDissertationsOnly)(e.target.checked)}
             />
             <span>Dissertations only</span>
           </label>
 
           <button
-            onClick={refreshAll}
+            onClick={() => {
+              setArea(""); setIssue(""); setDissertationsOnly(false); setQ(""); setPage(1);
+              if (typeof window !== "undefined") window.scrollTo(0, 0);
+            }}
             className="rounded-xl border px-3 py-2 bg-white"
             title="Clear filters"
           >
@@ -188,9 +432,13 @@ export default function Home() {
             <article key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-lg font-semibold">{r.title}</h2>
-                {r.is_dissertation && <span className="text-xs px-2 py-1 rounded-full border">Dissertation</span>}
+                {r.is_dissertation && (
+                  <span className="text-xs px-2 py-1 rounded-full border">Dissertation</span>
+                )}
               </div>
-              {r.summary && <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>}
+              {r.summary && (
+                <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>
+              )}
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 {r.area_primary && <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>}
                 {r.area_secondary && <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>}

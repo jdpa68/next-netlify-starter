@@ -174,8 +174,8 @@ export default function Home({
             <label style={{ fontSize: 14, fontWeight: 600 }}>
               Source
               <select
-                onChange={(e)=>{ setDissertationFilter(e.target.value); setPage(1); fetchData({reset:true}); }}
                 value={dissertationFilter}
+                onChange={(e)=>{ setDissertationFilter(e.target.value); setPage(1); fetchData({reset:true}); }}
                 style={{ marginLeft: 10, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f1f5f9", minWidth: 180 }}
               >
                 <option value="all">All sources</option>

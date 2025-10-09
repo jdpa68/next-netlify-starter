@@ -1,6 +1,5 @@
 // ===========================================
-// Lancelot Step 5c — Clean Index Using Columns
-// File: pages/index.js
+// Lancelot Evidence Tray — index.js (12 Areas + 5 Issues)
 // ===========================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -13,51 +12,40 @@ const supabase = createClient(
 
 const PAGE_SIZE = 20;
 
+const CANON_AREAS = [
+  "area_enrollment",
+  "area_marketing",
+  "area_finance",
+  "area_financial_aid",
+  "area_leadership",
+  "area_advising_registrar",
+  "area_it",
+  "area_curriculum_instruction",
+  "area_regional_accreditation",
+  "area_national_accreditation",
+  "area_opm",
+  "area_career_colleges"
+];
+
+const CANON_ISSUES = [
+  "issue_declining_enrollment",
+  "issue_student_success",
+  "issue_academic_quality",
+  "issue_cost_pricing",
+  "issue_compliance"
+];
+
 export default function Home() {
   const [area, setArea] = useState("");
   const [issue, setIssue] = useState("");
   const [dissertationsOnly, setDissertationsOnly] = useState(false);
   const [q, setQ] = useState("");
 
-  const [areas, setAreas] = useState([]);
-  const [issues, setIssues] = useState([]);
-
   const [rows, setRows] = useState([]);
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-
-  useEffect(() => {
-    const loadDistincts = async () => {
-      try {
-        setErr("");
-        const { data, error } = await supabase
-          .from("knowledge_base")
-          .select("area_primary,area_secondary,issue_primary,issue_secondary")
-          .limit(2000);
-        if (error) throw error;
-
-        const areaSet = new Set();
-        const issueSet = new Set();
-
-        data.forEach((r) => {
-          [r.area_primary, r.area_secondary].forEach((v) => {
-            if (v && typeof v === "string") areaSet.add(v);
-          });
-          [r.issue_primary, r.issue_secondary].forEach((v) => {
-            if (v && typeof v === "string") issueSet.add(v);
-          });
-        });
-
-        setAreas(Array.from(areaSet).sort());
-        setIssues(Array.from(issueSet).sort());
-      } catch (e) {
-        setErr(e.message || "Failed to load filter options.");
-      }
-    };
-    loadDistincts();
-  }, []);
 
   useEffect(() => {
     const fetchResults = async () => {
@@ -77,15 +65,12 @@ export default function Home() {
         if (area) {
           query = query.or(`area_primary.eq.${area},area_secondary.eq.${area}`);
         }
-
         if (issue) {
           query = query.or(`issue_primary.eq.${issue},issue_secondary.eq.${issue}`);
         }
-
         if (dissertationsOnly) {
           query = query.eq("is_dissertation", true);
         }
-
         if (q && q.trim().length > 0) {
           const term = q.trim();
           query = query.or(`title.ilike.%${term}%,summary.ilike.%${term}%`);
@@ -110,15 +95,8 @@ export default function Home() {
     fetchResults();
   }, [area, issue, dissertationsOnly, q, page]);
 
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil((count || 0) / PAGE_SIZE)),
-    [count]
-  );
-
-  const resetPageAnd = (fn) => (val) => {
-    setPage(1);
-    fn(val);
-  };
+  const totalPages = useMemo(() => Math.max(1, Math.ceil((count || 0) / PAGE_SIZE)), [count]);
+  const resetPageAnd = (fn) => (val) => { setPage(1); fn(val); };
 
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
@@ -138,29 +116,26 @@ export default function Home() {
             placeholder="Search title or summary…"
             className="md:col-span-2 w-full rounded-xl border px-3 py-2"
           />
-
           <select
             value={area}
             onChange={(e) => resetPageAnd(setArea)(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
             <option value="">All Areas</option>
-            {areas.map((a) => (
+            {CANON_AREAS.map((a) => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
-
           <select
             value={issue}
             onChange={(e) => resetPageAnd(setIssue)(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
             <option value="">All Issues</option>
-            {issues.map((i) => (
+            {CANON_ISSUES.map((i) => (
               <option key={i} value={i}>{i}</option>
             ))}
           </select>
-
           <label className="flex items-center gap-2 rounded-xl border px-3 py-2 bg-white">
             <input
               type="checkbox"
@@ -181,13 +156,9 @@ export default function Home() {
             <article key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-lg font-semibold">{r.title}</h2>
-                {r.is_dissertation && (
-                  <span className="text-xs px-2 py-1 rounded-full border">Dissertation</span>
-                )}
+                {r.is_dissertation && <span className="text-xs px-2 py-1 rounded-full border">Dissertation</span>}
               </div>
-              {r.summary && (
-                <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>
-              )}
+              {r.summary && <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>}
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 {r.area_primary && <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>}
                 {r.area_secondary && <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>}
@@ -195,17 +166,12 @@ export default function Home() {
                 {r.issue_secondary && <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>}
               </div>
               <div className="mt-3 flex items-center gap-3 text-xs">
-                {r.source_url && (
-                  <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">Open source</a>
-                )}
+                {r.source_url && <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">Open source</a>}
                 {r.tags && <span className="text-gray-500 truncate">tags: {r.tags}</span>}
               </div>
             </article>
           ))}
-
-          {!loading && rows.length === 0 && (
-            <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>
-          )}
+          {!loading && rows.length === 0 && <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>}
         </section>
 
         <section className="flex items-center justify-between">

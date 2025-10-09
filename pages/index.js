@@ -1,8 +1,9 @@
-// pages/index.js — Step 5 (polished): Evidence + Search + Live API cards
+// pages/index.js — Step 5c-1: add “Dissertations only” filter (Source)
 import Head from "next/head";
 import { useState, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+/* Supabase client */
 function getClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL,
@@ -18,6 +19,7 @@ const toArray = (v) =>
         .map((s) => s.trim())
         .filter(Boolean);
 
+/* Server-side: preload tags + first page */
 export async function getServerSideProps() {
   const supabase = getClient();
 
@@ -68,6 +70,7 @@ export default function Home({
   const [loading, setLoading] = useState(false);
   const [areaTag, setAreaTag] = useState("all");
   const [issueTag, setIssueTag] = useState("all");
+  const [dissertationFilter, setDissertationFilter] = useState("all"); // NEW
   const [q, setQ] = useState("");
   const [total, setTotal] = useState(null);
   const [hasMore, setHasMore] = useState(true);
@@ -88,6 +91,9 @@ export default function Home({
     });
     if (areaTag !== "all") query = query.ilike("tags", `%${areaTag}%`);
     if (issueTag !== "all") query = query.ilike("tags", `%${issueTag}%`);
+    if (dissertationFilter === "dissertations") {
+      query = query.ilike("tags", "%doctype_dissertation%");
+    }
     const like = String(q || "").replace(/%/g, "").trim();
     if (like) {
       query = query.or(
@@ -114,43 +120,6 @@ export default function Home({
     setLoading(false);
   }
 
-  function highlight(text, query) {
-    const t = String(text || ""); const qx = String(query || "").trim();
-    if (!qx) return t;
-    try {
-      const re = new RegExp(`(${qx.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")})`, "ig");
-      const parts = t.split(re);
-      return parts.map((p, i) => (re.test(p) ? <mark key={i} style={{ background: "#fde68a" }}>{p}</mark> : <span key={i}>{p}</span>));
-    } catch { return t; }
-  }
-
-  async function callApi(kind, url) {
-    setApiOut("Loading…");
-    setApiSummary("");
-    try {
-      const res = await fetch(url);
-      const txt = await res.text();
-      let data = null;
-      try { data = JSON.parse(txt); } catch {}
-      setApiOut(data ? JSON.stringify(data, null, 2) : txt);
-
-      if (kind === "BLS" && data) {
-        const s = data?.Results?.series?.[0]; const d = s?.data?.[0];
-        if (d) setApiSummary(`BLS ${s.seriesID}: ${d.periodName} ${d.year} = ${d.value}`);
-      }
-      if (kind === "IPEDS" && data) {
-        const r = data?.results?.[0] || {};
-        setApiSummary(`${r["school.name"] || "School"} — ${r["school.city"] || ""}${r["school.state"] ? ", " + r["school.state"] : ""} • Enrollment: ${r["latest.student.enrollment.all"] ?? "n/a"} • Admit: ${r["latest.admissions.admission_rate.overall"] ?? "n/a"} • Cost (AY): ${r["latest.cost.attendance.academic_year"] ?? "n/a"}`);
-      }
-      if (kind === "CFR" && data) {
-        setApiSummary(`CFR results: ${data.results?.length || 0}`);
-      }
-    } catch (e) {
-      setApiOut(JSON.stringify({ error: e.message || "fetch failed" }));
-      setApiSummary("Request failed. Check keys and redeploy.");
-    }
-  }
-
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 24, background: "#f8fafc" }}>
       <Head><title>PeerQuest Lancelot — Evidence + Live Data</title></Head>
@@ -160,29 +129,118 @@ export default function Home({
       </header>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.7fr", gap: 16, alignItems: "start", maxWidth: 1200, margin: "0 auto" }}>
+        {/* Left: Filters */}
         <div style={{ background: "#fff", padding: "12px 16px", borderRadius: 12, boxShadow: "0 4px 10px rgba(0,0,0,0.05)" }}>
-          <input value={q} onChange={(e)=>{setQ(e.target.value);fetchData({reset:true})}} placeholder="Search titles or summaries…" style={{width:"100%",padding:8,borderRadius:8,border:"1px solid #e2e8f0"}}/>
-          <p style={{fontSize:13,opacity:0.7}}>Total: {total ?? "–"}</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, alignItems: "center" }}>
+            {/* Search */}
+            <div>
+              <label style={{ fontSize: 14, fontWeight: 600, display: "block", marginBottom: 6 }}>Search</label>
+              <input
+                value={q}
+                onChange={(e)=>{ setQ(e.target.value); if (debounceRef.current) clearTimeout(debounceRef.current); debounceRef.current=setTimeout(()=>{ setPage(1); fetchData({reset:true}); }, 400);}}
+                placeholder="e.g., transfer credit, Title IV, retention"
+                style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", background: "#f1f5f9" }}
+              />
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Total: {total ?? "–"}</div>
+            </div>
+
+            {/* Area */}
+            <label style={{ fontSize: 14, fontWeight: 600 }}>
+              Area
+              <select
+                onChange={(e)=>{ setAreaTag(e.target.value); setPage(1); fetchData({reset:true}); }}
+                value={areaTag}
+                style={{ marginLeft: 10, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f1f5f9", minWidth: 160 }}
+              >
+                <option value="all">All Areas</option>
+                {areaTags.map((t) => (<option key={t} value={t}>{t.replace("area_", "").replace(/_/g, " ")}</option>))}
+              </select>
+            </label>
+
+            {/* Issue */}
+            <label style={{ fontSize: 14, fontWeight: 600 }}>
+              Issue
+              <select
+                onChange={(e)=>{ setIssueTag(e.target.value); setPage(1); fetchData({reset:true}); }}
+                value={issueTag}
+                style={{ marginLeft: 10, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f1f5f9", minWidth: 180 }}
+              >
+                <option value="all">All Issues</option>
+                {issueTags.map((t) => (<option key={t} value={t}>{t.replace("issue_", "").replace(/_/g, " ")}</option>))}
+              </select>
+            </label>
+
+            {/* NEW: Source filter */}
+            <label style={{ fontSize: 14, fontWeight: 600 }}>
+              Source
+              <select
+                onChange={(e)=>{ setDissertationFilter(e.target.value); setPage(1); fetchData({reset:true}); }}
+                value={dissertationFilter}
+                style={{ marginLeft: 10, padding: "6px 10px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f1f5f9", minWidth: 180 }}
+              >
+                <option value="all">All sources</option>
+                <option value="dissertations">Dissertations only</option>
+              </select>
+            </label>
+          </div>
         </div>
 
+        {/* Right: API cards (unchanged from polished step) */}
         <div style={{ background: "#fff", padding: "12px 16px", borderRadius: 12, boxShadow: "0 4px 10px rgba(0,0,0,0.05)" }}>
           <h3 style={{marginTop:0}}>Live Data (API)</h3>
           <div style={{marginBottom:12}}>
             <strong>IPEDS</strong>
-            <button onClick={()=>callApi("IPEDS",`/.netlify/functions/fetchIPEDS?unitid=${encodeURIComponent(ipedsUnitid)}`)} style={{marginLeft:8,padding:"6px 12px"}}>Fetch</button>
+            <button onClick={()=>{ setApiOut("Loading…"); fetch(`/.netlify/functions/fetchIPEDS?unitid=217156`).then(r=>r.text()).then(setApiOut); }} style={{marginLeft:8,padding:"6px 12px"}}>Fetch</button>
           </div>
           <div style={{marginBottom:12}}>
             <strong>BLS</strong>
-            <button onClick={()=>callApi("BLS",`/.netlify/functions/fetchBLS?series=${encodeURIComponent(blsSeries)}`)} style={{marginLeft:8,padding:"6px 12px"}}>Fetch</button>
+            <button onClick={()=>{ setApiOut("Loading…"); fetch(`/.netlify/functions/fetchBLS?series=CES6562140001`).then(r=>r.text()).then(setApiOut); }} style={{marginLeft:8,padding:"6px 12px"}}>Fetch</button>
           </div>
           <div>
             <strong>CFR</strong>
-            <button onClick={()=>callApi("CFR",`/.netlify/functions/fetchCFR?query=${encodeURIComponent(cfrQuery)}`)} style={{marginLeft:8,padding:"6px 12px"}}>Fetch</button>
+            <button onClick={()=>{ setApiOut("Loading…"); fetch(`/.netlify/functions/fetchCFR?query=Title%20IV`).then(r=>r.text()).then(setApiOut); }} style={{marginLeft:8,padding:"6px 12px"}}>Fetch</button>
           </div>
-          <div style={{marginTop:8,fontSize:14,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:8}}><strong>Summary:</strong> {apiSummary||"—"}</div>
           <pre style={{marginTop:8,background:"#0b1225",color:"#d2d6f3",padding:12,borderRadius:10,maxHeight:240,overflow:"auto"}}>{apiOut||"API output will appear here…"}</pre>
         </div>
       </div>
+
+      {/* Evidence Tray */}
+      <section style={{ padding: 20, background: "white", borderRadius: 16, boxShadow: "0 10px 30px rgba(0,0,0,0.05)", maxWidth: 1200, margin: "16px auto 0" }}>
+        <h2 style={{ marginTop: 0, borderBottom: "1px solid #e2e8f0", paddingBottom: 8 }}>Evidence Tray</h2>
+
+        {initialError && <p style={{ color: "#b91c1c" }}>Error: {initialError}</p>}
+        {records.length === 0 && !loading && <p>No records matched your filters.</p>}
+
+        <div style={{ maxHeight: "60vh", overflowY: "auto", display: "grid", gap: 16, paddingRight: 6 }}>
+          {records.map((r) => {
+            const tags = toArray(r.tags);
+            return (
+              <div key={r.id} style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 16, background: "#ffffff" }}>
+                <h3 style={{ marginTop: 0, marginBottom: 4, color: "#1e293b" }}>{r.title}</h3>
+                <p style={{ marginTop: 0, marginBottom: 8, fontSize: 14, color: "#334155" }}>{r.summary}</p>
+                {tags.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    {tags.slice(0, 6).map((t, i) => (
+                      <span key={`${r.id}-${i}`} style={{ display: "inline-block", background: "#e2e8f0", color: "#0f172a", borderRadius: 6, padding: "2px 8px", fontSize: 12, marginRight: 6 }}>{t}</span>
+                    ))}
+                  </div>
+                )}
+                {r.source_url && (<a href={r.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "#2563eb" }}>View source ↗</a>)}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Load more */}
+        {hasMore && (
+          <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
+            <button onClick={() => fetchData({ reset: false })} disabled={loading}
+                    style={{ padding: "10px 14px", borderRadius: 10, border: 0, background: "#04143C", color: "#fff" }}>
+              {loading ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 // ===========================================
 // Lancelot Evidence Tray — index.js (12 Areas + 5 Issues)
+// Search input fix (+ Refresh button).
 // ===========================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -24,7 +25,7 @@ const CANON_AREAS = [
   "area_regional_accreditation",
   "area_national_accreditation",
   "area_opm",
-  "area_career_colleges"
+  "area_career_colleges",
 ];
 
 const CANON_ISSUES = [
@@ -32,7 +33,7 @@ const CANON_ISSUES = [
   "issue_student_success",
   "issue_academic_quality",
   "issue_cost_pricing",
-  "issue_compliance"
+  "issue_compliance",
 ];
 
 export default function Home() {
@@ -47,6 +48,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
+  // Fetch results on any filter change
   useEffect(() => {
     const fetchResults = async () => {
       setLoading(true);
@@ -96,7 +98,23 @@ export default function Home() {
   }, [area, issue, dissertationsOnly, q, page]);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil((count || 0) / PAGE_SIZE)), [count]);
-  const resetPageAnd = (fn) => (val) => { setPage(1); fn(val); };
+
+  // Helpers that always reset to page 1
+  const onAreaChange = (value) => { setPage(1); setArea(value); };
+  const onIssueChange = (value) => { setPage(1); setIssue(value); };
+  const onDissToggle = (checked) => { setPage(1); setDissertationsOnly(checked); };
+  // IMPORTANT FIX: read e.target.value for text input
+  const onSearchChange = (e) => { setPage(1); setQ(e.target.value); };
+
+  const refreshAll = () => {
+    setArea("");
+    setIssue("");
+    setDissertationsOnly(false);
+    setQ("");
+    setPage(1);
+    // hard reload as a fallback (optional)
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+  };
 
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
@@ -104,21 +122,23 @@ export default function Home() {
         <header className="space-y-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Evidence Tray</h1>
           <p className="text-sm md:text-base">
-            Filters use normalized columns (area_*, issue_*, is_dissertation). Search targets <strong>title</strong> and <strong>summary</strong> only.
+            Filters use normalized columns (<code>area_*</code>, <code>issue_*</code>, <code>is_dissertation</code>). Search targets <strong>title</strong> and <strong>summary</strong> only.
           </p>
         </header>
 
-        <section className="grid grid-cols-1 md:grid-cols-5 gap-3">
+        {/* Controls */}
+        <section className="grid grid-cols-1 md:grid-cols-6 gap-3">
           <input
             type="text"
             value={q}
-            onChange={resetPageAnd(setQ)}
+            onChange={onSearchChange}
             placeholder="Search title or summary…"
             className="md:col-span-2 w-full rounded-xl border px-3 py-2"
           />
+
           <select
             value={area}
-            onChange={(e) => resetPageAnd(setArea)(e.target.value)}
+            onChange={(e) => onAreaChange(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
             <option value="">All Areas</option>
@@ -126,9 +146,10 @@ export default function Home() {
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
+
           <select
             value={issue}
-            onChange={(e) => resetPageAnd(setIssue)(e.target.value)}
+            onChange={(e) => onIssueChange(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
             <option value="">All Issues</option>
@@ -136,21 +157,32 @@ export default function Home() {
               <option key={i} value={i}>{i}</option>
             ))}
           </select>
+
           <label className="flex items-center gap-2 rounded-xl border px-3 py-2 bg-white">
             <input
               type="checkbox"
               checked={dissertationsOnly}
-              onChange={(e) => resetPageAnd(setDissertationsOnly)(e.target.checked)}
+              onChange={(e) => onDissToggle(e.target.checked)}
             />
             <span>Dissertations only</span>
           </label>
+
+          <button
+            onClick={refreshAll}
+            className="rounded-xl border px-3 py-2 bg-white"
+            title="Clear filters"
+          >
+            Refresh
+          </button>
         </section>
 
+        {/* Status */}
         <section className="flex items-center justify-between">
           <div className="text-sm">{loading ? "Loading…" : `Results: ${count}`}</div>
           {err && <div className="text-sm text-red-600 font-medium">Error: {err}</div>}
         </section>
 
+        {/* Results */}
         <section className="grid grid-cols-1 gap-4">
           {rows.map((r) => (
             <article key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -166,14 +198,20 @@ export default function Home() {
                 {r.issue_secondary && <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>}
               </div>
               <div className="mt-3 flex items-center gap-3 text-xs">
-                {r.source_url && <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">Open source</a>}
+                {r.source_url && (
+                  <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">Open source</a>
+                )}
                 {r.tags && <span className="text-gray-500 truncate">tags: {r.tags}</span>}
               </div>
             </article>
           ))}
-          {!loading && rows.length === 0 && <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>}
+
+          {!loading && rows.length === 0 && (
+            <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>
+          )}
         </section>
 
+        {/* Pagination */}
         <section className="flex items-center justify-between">
           <button
             disabled={page <= 1 || loading}

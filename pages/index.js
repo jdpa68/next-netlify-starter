@@ -1,5 +1,6 @@
 // ===========================================
-// Lancelot Evidence Tray + Sandbox Panel + Auth (Email/Password)
+// Lancelot Evidence Tray + Sandbox Panel + Auth
+// with separate Primary/Secondary filters
 // Drop-in replacement for pages/index.js
 // ===========================================
 
@@ -15,10 +16,13 @@ const PAGE_SIZE = 20;
 
 export default function Home() {
   // -------- Evidence Tray state --------
-  const [area, setArea] = useState("");
-  const [issue, setIssue] = useState("");
-  const [dissertationsOnly, setDissertationsOnly] = useState(false);
   const [q, setQ] = useState("");
+  const [areaP, setAreaP] = useState("");
+  const [areaS, setAreaS] = useState("");
+  const [issueP, setIssueP] = useState("");
+  const [issueS, setIssueS] = useState("");
+  const [dissertationsOnly, setDissertationsOnly] = useState(false);
+
   const [rows, setRows] = useState([]);
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(1);
@@ -77,15 +81,23 @@ export default function Home() {
             { count: "exact" }
           );
 
-        if (area) query = query.or(`area_primary.eq.${area},area_secondary.eq.${area}`);
-        if (issue) query = query.or(`issue_primary.eq.${issue},issue_secondary.eq.${issue}`);
+        // Exact, column-specific filters
+        if (areaP) query = query.eq("area_primary", areaP);
+        if (areaS) query = query.eq("area_secondary", areaS);
+        if (issueP) query = query.eq("issue_primary", issueP);
+        if (issueS) query = query.eq("issue_secondary", issueS);
+
         if (dissertationsOnly) query = query.eq("is_dissertation", true);
+
+        // Text search (title + summary)
         if (q && q.trim().length > 0) {
           const term = q.trim();
           query = query.or(`title.ilike.%${term}%,summary.ilike.%${term}%`);
         }
 
+        // Sort newest id first (adjust to created_at if you have it)
         query = query.order("id", { ascending: false }).range(from, to);
+
         const { data, error, count: total } = await query;
         if (error) throw error;
 
@@ -101,7 +113,7 @@ export default function Home() {
     };
 
     fetchResults();
-  }, [area, issue, dissertationsOnly, q, page]);
+  }, [q, areaP, areaS, issueP, issueS, dissertationsOnly, page]);
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil((count || 0) / PAGE_SIZE)),
@@ -113,7 +125,7 @@ export default function Home() {
     fn(val);
   };
 
-  // ===== Sandbox helpers =====
+  // ===== Sandbox helpers (unchanged) =====
   const loadSession = async () => {
     const { data } = await supabase.auth.getSession();
     setSession(data?.session || null);
@@ -138,7 +150,6 @@ export default function Home() {
     }
   };
 
-  // Load session + files on mount and when auth changes
   useEffect(() => {
     loadSession().then(loadMyFiles);
     const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
@@ -200,7 +211,6 @@ export default function Home() {
     setUploading(true);
     setSbErr("");
     try {
-      // 1) Request signed upload URL
       const res1 = await fetch("/.netlify/functions/sandbox-createUpload", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -214,14 +224,12 @@ export default function Home() {
       if (!res1.ok) throw new Error(data1 || "Failed to create upload URL");
       const { uploadUrl, fileKey } = data1;
 
-      // 2) PUT file to signed URL
       const resPut = await fetch(uploadUrl, { method: "PUT", body: file });
       if (!resPut.ok) {
         const text = await resPut.text();
         throw new Error(`Upload failed: ${text || resPut.status}`);
       }
 
-      // 3) Finalize metadata
       const res2 = await fetch("/.netlify/functions/sandbox-finalize", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -280,10 +288,8 @@ export default function Home() {
     setBusy(true);
     setSbErr("");
     try {
-      // Remove from storage
       const { error: sErr } = await supabase.storage.from("sandbox").remove([row.file_key]);
       if (sErr) throw sErr;
-      // Mark row deleted
       const { error: dErr } = await supabase
         .from("sandbox_files")
         .update({ status: "deleted" })
@@ -301,6 +307,7 @@ export default function Home() {
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
       <div className="max-w-6xl mx-auto space-y-8">
+
         {/* Sandbox Panel with Auth */}
         <section className="rounded-2xl border bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -418,7 +425,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Evidence Tray (unchanged) */}
+        {/* Evidence Tray */}
         <header className="space-y-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Evidence Tray</h1>
           <p className="text-sm md:text-base">
@@ -426,7 +433,7 @@ export default function Home() {
           </p>
         </header>
 
-        {/* Controls */}
+        {/* Controls — split into Primary vs Secondary */}
         <section className="grid grid-cols-1 md:grid-cols-6 gap-3">
           <input
             type="text"
@@ -437,22 +444,44 @@ export default function Home() {
           />
 
           <select
-            value={area}
-            onChange={(e) => resetPageAnd(setArea)(e.target.value)}
+            value={areaP}
+            onChange={(e) => resetPageAnd(setAreaP)(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
-            <option value="">All Areas</option>
+            <option value="">Area (Primary)</option>
             {AREAS.map((a) => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
 
           <select
-            value={issue}
-            onChange={(e) => resetPageAnd(setIssue)(e.target.value)}
+            value={issueP}
+            onChange={(e) => resetPageAnd(setIssueP)(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
           >
-            <option value="">All Issues</option>
+            <option value="">Issue (Primary)</option>
+            {ISSUES.map((i) => (
+              <option key={i} value={i}>{i}</option>
+            ))}
+          </select>
+
+          <select
+            value={areaS}
+            onChange={(e) => resetPageAnd(setAreaS)(e.target.value)}
+            className="w-full rounded-xl border px-3 py-2"
+          >
+            <option value="">Area (Secondary)</option>
+            {AREAS.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+
+          <select
+            value={issueS}
+            onChange={(e) => resetPageAnd(setIssueS)(e.target.value)}
+            className="w-full rounded-xl border px-3 py-2"
+          >
+            <option value="">Issue (Secondary)</option>
             {ISSUES.map((i) => (
               <option key={i} value={i}>{i}</option>
             ))}
@@ -466,18 +495,6 @@ export default function Home() {
             />
             <span>Dissertations only</span>
           </label>
-
-          <button
-            onClick={() => {
-              setArea(""); setIssue("");
-              setDissertationsOnly(false); setQ(""); setPage(1);
-              if (typeof window !== "undefined") window.scrollTo(0, 0);
-            }}
-            className="rounded-xl border px-3 py-2 bg-white"
-            title="Clear filters"
-          >
-            Refresh
-          </button>
         </section>
 
         {/* Status */}
@@ -489,10 +506,7 @@ export default function Home() {
         {/* Results */}
         <section className="grid grid-cols-1 gap-4">
           {rows.map((r) => (
-            <article
-              key={r.id}
-              className="rounded-2xl border bg-white p-4 shadow-sm"
-            >
+            <article key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-lg font-semibold">{r.title}</h2>
                 {r.is_dissertation && (
@@ -503,41 +517,24 @@ export default function Home() {
                 <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>
               )}
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                {r.area_primary && (
-                  <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>
-                )}
-                {r.area_secondary && (
-                  <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>
-                )}
-                {r.issue_primary && (
-                  <span className="px-2 py-1 rounded-full border">{r.issue_primary}</span>
-                )}
-                {r.issue_secondary && (
-                  <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>
-                )}
+                {r.area_primary && <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>}
+                {r.area_secondary && <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>}
+                {r.issue_primary && <span className="px-2 py-1 rounded-full border">{r.issue_primary}</span>}
+                {r.issue_secondary && <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>}
               </div>
               <div className="mt-3 flex items-center gap-3 text-xs">
                 {r.source_url && (
-                  <a
-                    href={r.source_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
+                  <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">
                     Open source
                   </a>
                 )}
-                {r.tags && (
-                  <span className="text-gray-500 truncate">tags: {r.tags}</span>
-                )}
+                {r.tags && <span className="text-gray-500 truncate">tags: {r.tags}</span>}
               </div>
             </article>
           ))}
 
           {!loading && rows.length === 0 && (
-            <div className="text-sm text-gray-500">
-              No results. Try adjusting filters.
-            </div>
+            <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>
           )}
         </section>
 

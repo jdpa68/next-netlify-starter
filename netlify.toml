@@ -9,11 +9,12 @@
 # Ensure functions are bundled correctly
 [functions]
   node_bundler = "esbuild"
-
-# Make sure the Supabase SDK is included in the bundle
-[functions."chat"]
   external_node_modules = ["@supabase/supabase-js"]
 
-# Next.js plugin (keep this if your file already has it)
+# Hourly cleanup schedule (runs sandbox-cleanup)
+[[scheduled.functions]]
+  name = "sandbox-cleanup"
+  cron = "0 * * * *"
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

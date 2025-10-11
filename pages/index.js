@@ -1,6 +1,6 @@
 // ===========================================
-// Lancelot Evidence Tray + Sandbox + Auth + Audit Panel
-// Step 7a-2: "Open KB Audit" panel wired to v_kb_final_audit
+// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit
+// Step 7a-3: polish labels/spacing + filter badge + 'Run cleanup now'
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -50,11 +50,15 @@ export default function Home() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authMsg, setAuthMsg] = useState("");
 
-  // -------- Audit panel state (NEW) --------
+  // -------- Audit panel state --------
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditRows, setAuditRows] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditErr, setAuditErr] = useState("");
+
+  // -------- Admin utility state (Run cleanup now) --------
+  const [adminMsg, setAdminMsg] = useState("");
+  const [adminBusy, setAdminBusy] = useState(false);
 
   // ===== Evidence Tray effects =====
   useEffect(() => {
@@ -107,6 +111,15 @@ export default function Home() {
   );
 
   const resetPageAnd = (fn) => (val) => { setPage(1); fn(val); };
+
+  const activeFilters = useMemo(() => {
+    let n = 0;
+    if (areaP) n++; if (areaS) n++;
+    if (issueP) n++; if (issueS) n++;
+    if (dissertationsOnly) n++;
+    if (q && q.trim()) n++;
+    return n;
+  }, [areaP, areaS, issueP, issueS, dissertationsOnly, q]);
 
   // ===== Sandbox helpers =====
   const loadSession = async () => {
@@ -250,7 +263,7 @@ export default function Home() {
     }
   };
 
-  // ===== Audit helpers (NEW) =====
+  // ===== Audit helpers =====
   const toggleAudit = async () => {
     const open = !auditOpen;
     setAuditOpen(open);
@@ -279,36 +292,45 @@ export default function Home() {
     }
   };
 
+  // ===== Admin utility: Run cleanup now =====
+  const runCleanupNow = async () => {
+    setAdminBusy(true); setAdminMsg("");
+    try {
+      const res = await fetch("/.netlify/functions/sandbox-cleanup");
+      const text = await res.text();
+      setAdminMsg(text || "Cleanup triggered.");
+    } catch (e) {
+      setAdminMsg(e.message || "Failed to run cleanup.");
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
   // ===== UI =====
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
-      <div className="max-w-6xl mx-auto space-y-8">
+      <div className="max-w-6xl mx-auto space-y-6">
 
-        {/* Top bar: Audit button (NEW) */}
+        {/* Top bar: Audit + Admin */}
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Console</h1>
           <div className="flex items-center gap-2">
-            <button
-              onClick={toggleAudit}
-              className="rounded-xl border px-3 py-2 bg-white"
-              title="Open KB Audit"
-            >
+            <button onClick={toggleAudit} className="rounded-xl border px-3 py-2 bg-white">
               {auditOpen ? "Close KB Audit" : "Open KB Audit"}
+            </button>
+            <button onClick={runCleanupNow} disabled={adminBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+              {adminBusy ? "Running…" : "Run cleanup now"}
             </button>
           </div>
         </div>
+        {adminMsg && <div className="text-xs text-gray-600">Admin: {adminMsg}</div>}
 
-        {/* Audit panel (NEW) */}
+        {/* Audit panel (unchanged from 7a-2) */}
         {auditOpen && (
           <section className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">KB Audit (Primary Area x Primary Issue)</h2>
-              <button
-                onClick={loadAudit}
-                className="rounded-xl border px-3 py-1 bg-white text-sm"
-              >
-                Refresh
-              </button>
+              <h2 className="text-lg font-semibold">KB Audit (Primary Area × Primary Issue)</h2>
+              <button onClick={loadAudit} className="rounded-xl border px-3 py-1 bg-white text-sm">Refresh</button>
             </div>
             {auditLoading && <div className="mt-2 text-sm">Loading…</div>}
             {auditErr && <div className="mt-2 text-sm text-red-600">Error: {auditErr}</div>}
@@ -422,33 +444,49 @@ export default function Home() {
         </header>
 
         {/* Controls — Primary & Secondary split */}
-        <section className="grid grid-cols-1 md:grid-cols-6 gap-3">
-          <input type="text" value={q} onChange={(e)=>resetPageAnd(setQ)(e.target.value)} placeholder="Search title or summary…" className="md:col-span-2 w-full rounded-xl border px-3 py-2" />
+        <section className="space-y-3">
+          {/* Primary row */}
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+            <input type="text" value={q} onChange={(e)=>resetPageAnd(setQ)(e.target.value)} placeholder="Search title or summary…" className="md:col-span-2 w-full rounded-xl border px-3 py-2" />
+            <select value={areaP} onChange={(e)=>resetPageAnd(setAreaP)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+              <option value="">Area (Primary)</option>
+              {AREAS.map((a)=> (<option key={a} value={a}>{a}</option>))}
+            </select>
+            <select value={issueP} onChange={(e)=>resetPageAnd(setIssueP)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+              <option value="">Issue (Primary)</option>
+              {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
+            </select>
+            {/* Active filters badge */}
+            <div className="md:col-span-2 flex items-center">
+              <span className="ml-auto text-xs px-2 py-1 rounded-full border bg-white">
+                Active filters: {activeFilters}
+              </span>
+            </div>
+          </div>
 
-          <select value={areaP} onChange={(e)=>resetPageAnd(setAreaP)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
-            <option value="">Area (Primary)</option>
-            {AREAS.map((a)=> (<option key={a} value={a}>{a}</option>))}
-          </select>
-
-          <select value={issueP} onChange={(e)=>resetPageAnd(setIssueP)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
-            <option value="">Issue (Primary)</option>
-            {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
-          </select>
-
-          <select value={areaS} onChange={(e)=>resetPageAnd(setAreaS)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
-            <option value="">Area (Secondary)</option>
-            {AREAS.map((a)=> (<option key={a} value={a}>{a}</option>))}
-          </select>
-
-          <select value={issueS} onChange={(e)=>resetPageAnd(setIssueS)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
-            <option value="">Issue (Secondary)</option>
-            {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
-          </select>
-
-          <label className="flex items-center gap-2 rounded-xl border px-3 py-2 bg-white">
-            <input type="checkbox" checked={dissertationsOnly} onChange={(e)=>resetPageAnd(setDissertationsOnly)(e.target.checked)} />
-            <span>Dissertations only</span>
-          </label>
+          {/* Secondary row */}
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+            <div className="md:col-span-2 text-sm text-gray-600">Secondary Filters</div>
+            <select value={areaS} onChange={(e)=>resetPageAnd(setAreaS)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+              <option value="">Area (Secondary)</option>
+              {AREAS.map((a)=> (<option key={a} value={a}>{a}</option>))}
+            </select>
+            <select value={issueS} onChange={(e)=>resetPageAnd(setIssueS)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+              <option value="">Issue (Secondary)</option>
+              {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
+            </select>
+            <label className="flex items-center gap-2 rounded-xl border px-3 py-2 bg-white">
+              <input type="checkbox" checked={dissertationsOnly} onChange={(e)=>resetPageAnd(setDissertationsOnly)(e.target.checked)} />
+              <span>Dissertations only</span>
+            </label>
+            <button
+              onClick={() => { setAreaP(""); setAreaS(""); setIssueP(""); setIssueS(""); setDissertationsOnly(false); setQ(""); setPage(1); if (typeof window !== "undefined") window.scrollTo(0, 0); }}
+              className="rounded-xl border px-3 py-2 bg-white"
+              title="Clear filters"
+            >
+              Refresh
+            </button>
+          </div>
         </section>
 
         {/* Status */}

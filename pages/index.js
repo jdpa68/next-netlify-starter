@@ -1,7 +1,6 @@
 // ===========================================
-// Lancelot Evidence Tray + Sandbox Panel + Auth
-// with separate Primary/Secondary filters
-// Drop-in replacement for pages/index.js
+// Lancelot Evidence Tray + Sandbox + Auth + Audit Panel
+// Step 7a-2: "Open KB Audit" panel wired to v_kb_final_audit
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,25 +29,12 @@ export default function Home() {
   const [err, setErr] = useState("");
 
   const AREAS = [
-    "area_enrollment",
-    "area_marketing",
-    "area_finance",
-    "area_financial_aid",
-    "area_leadership",
-    "area_advising_registrar",
-    "area_it",
-    "area_curriculum_instruction",
-    "area_regional_accreditation",
-    "area_national_accreditation",
-    "area_opm",
-    "area_career_colleges",
+    "area_enrollment","area_marketing","area_finance","area_financial_aid","area_leadership",
+    "area_advising_registrar","area_it","area_curriculum_instruction","area_regional_accreditation",
+    "area_national_accreditation","area_opm","area_career_colleges",
   ];
   const ISSUES = [
-    "issue_declining_enrollment",
-    "issue_student_success",
-    "issue_academic_quality",
-    "issue_cost_pricing",
-    "issue_compliance",
+    "issue_declining_enrollment","issue_student_success","issue_academic_quality","issue_cost_pricing","issue_compliance",
   ];
 
   // -------- Sandbox/Auth state --------
@@ -59,11 +45,16 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
 
-  // Simple auth form
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authMsg, setAuthMsg] = useState("");
+
+  // -------- Audit panel state (NEW) --------
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditRows, setAuditRows] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditErr, setAuditErr] = useState("");
 
   // ===== Evidence Tray effects =====
   useEffect(() => {
@@ -81,23 +72,18 @@ export default function Home() {
             { count: "exact" }
           );
 
-        // Exact, column-specific filters
         if (areaP) query = query.eq("area_primary", areaP);
         if (areaS) query = query.eq("area_secondary", areaS);
         if (issueP) query = query.eq("issue_primary", issueP);
         if (issueS) query = query.eq("issue_secondary", issueS);
-
         if (dissertationsOnly) query = query.eq("is_dissertation", true);
 
-        // Text search (title + summary)
         if (q && q.trim().length > 0) {
           const term = q.trim();
           query = query.or(`title.ilike.%${term}%,summary.ilike.%${term}%`);
         }
 
-        // Sort newest id first (adjust to created_at if you have it)
         query = query.order("id", { ascending: false }).range(from, to);
-
         const { data, error, count: total } = await query;
         if (error) throw error;
 
@@ -120,20 +106,16 @@ export default function Home() {
     [count]
   );
 
-  const resetPageAnd = (fn) => (val) => {
-    setPage(1);
-    fn(val);
-  };
+  const resetPageAnd = (fn) => (val) => { setPage(1); fn(val); };
 
-  // ===== Sandbox helpers (unchanged) =====
+  // ===== Sandbox helpers =====
   const loadSession = async () => {
     const { data } = await supabase.auth.getSession();
     setSession(data?.session || null);
   };
 
   const loadMyFiles = async () => {
-    setBusy(true);
-    setSbErr("");
+    setBusy(true); setSbErr("");
     try {
       const { data, error } = await supabase
         .from("sandbox_files")
@@ -170,9 +152,7 @@ export default function Home() {
 
   // ===== Auth actions =====
   const onSignIn = async () => {
-    setAuthBusy(true);
-    setAuthMsg("");
-    setSbErr("");
+    setAuthBusy(true); setAuthMsg(""); setSbErr("");
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
@@ -187,14 +167,10 @@ export default function Home() {
   };
 
   const onSignOut = async () => {
-    setAuthBusy(true);
-    setAuthMsg("");
+    setAuthBusy(true); setAuthMsg("");
     try {
       await supabase.auth.signOut();
-      setEmail("");
-      setPassword("");
-      setFiles([]);
-      setSession(null);
+      setEmail(""); setPassword(""); setFiles([]); setSession(null);
     } catch (e) {
       setAuthMsg(e.message || "Sign-out failed.");
     } finally {
@@ -204,45 +180,28 @@ export default function Home() {
 
   // ===== Upload flow =====
   const doUpload = async (file) => {
-    if (!session) {
-      setSbErr("Please sign in to upload.");
-      return;
-    }
-    setUploading(true);
-    setSbErr("");
+    if (!session) { setSbErr("Please sign in to upload."); return; }
+    setUploading(true); setSbErr("");
     try {
       const res1 = await fetch("/.netlify/functions/sandbox-createUpload", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({
-          filename: file.name,
-          mime: file.type || "application/octet-stream",
-          size: file.size || 0,
-        }),
+        body: JSON.stringify({ filename: file.name, mime: file.type || "application/octet-stream", size: file.size || 0 }),
       });
       const data1 = await res1.json();
       if (!res1.ok) throw new Error(data1 || "Failed to create upload URL");
       const { uploadUrl, fileKey } = data1;
 
       const resPut = await fetch(uploadUrl, { method: "PUT", body: file });
-      if (!resPut.ok) {
-        const text = await resPut.text();
-        throw new Error(`Upload failed: ${text || resPut.status}`);
-      }
+      if (!resPut.ok) { const t = await resPut.text(); throw new Error(`Upload failed: ${t || resPut.status}`); }
 
       const res2 = await fetch("/.netlify/functions/sandbox-finalize", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({
-          fileKey,
-          original_name: file.name,
-          mime: file.type || "application/octet-stream",
-          size: file.size || 0,
-        }),
+        body: JSON.stringify({ fileKey, original_name: file.name, mime: file.type || "application/octet-stream", size: file.size || 0 }),
       });
       const data2 = await res2.json();
       if (!res2.ok) throw new Error(data2 || "Finalize failed");
-
       await loadMyFiles();
     } catch (e) {
       setSbErr(e.message || "Upload failed.");
@@ -253,27 +212,19 @@ export default function Home() {
   };
 
   const onPickFile = async (e) => {
-    const file = e.target?.files?.[0];
-    if (!file) return;
-    const MAX = 50 * 1024 * 1024; // 50MB
-    if (file.size > MAX) {
-      setSbErr("File exceeds 50MB limit.");
-      e.target.value = "";
-      return;
-    }
+    const file = e.target?.files?.[0]; if (!file) return;
+    const MAX = 50 * 1024 * 1024;
+    if (file.size > MAX) { setSbErr("File exceeds 50MB limit."); e.target.value = ""; return; }
     await doUpload(file);
   };
 
   const doDownload = async (fileKey) => {
     if (!session) return;
-    setBusy(true);
-    setSbErr("");
+    setBusy(true); setSbErr("");
     try {
       const url = new URL("/.netlify/functions/sandbox-download", window.location.origin);
       url.searchParams.set("file_key", fileKey);
-      const res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
+      const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${session.access_token}` } });
       const data = await res.json();
       if (!res.ok) throw new Error(data || "Download link failed");
       window.open(data.downloadUrl, "_blank");
@@ -285,15 +236,11 @@ export default function Home() {
   };
 
   const doDelete = async (row) => {
-    setBusy(true);
-    setSbErr("");
+    setBusy(true); setSbErr("");
     try {
       const { error: sErr } = await supabase.storage.from("sandbox").remove([row.file_key]);
       if (sErr) throw sErr;
-      const { error: dErr } = await supabase
-        .from("sandbox_files")
-        .update({ status: "deleted" })
-        .eq("id", row.id);
+      const { error: dErr } = await supabase.from("sandbox_files").update({ status: "deleted" }).eq("id", row.id);
       if (dErr) throw dErr;
       await loadMyFiles();
     } catch (e) {
@@ -303,12 +250,107 @@ export default function Home() {
     }
   };
 
+  // ===== Audit helpers (NEW) =====
+  const toggleAudit = async () => {
+    const open = !auditOpen;
+    setAuditOpen(open);
+    if (open && auditRows.length === 0) {
+      await loadAudit();
+    }
+  };
+
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    setAuditErr("");
+    try {
+      const { data, error } = await supabase
+        .from("v_kb_final_audit")
+        .select("*")
+        .order("area_primary", { ascending: true })
+        .order("issue_primary", { ascending: true })
+        .limit(100);
+      if (error) throw error;
+      setAuditRows(data || []);
+    } catch (e) {
+      setAuditErr(e.message || "Failed to load audit view.");
+      setAuditRows([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
   // ===== UI =====
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
       <div className="max-w-6xl mx-auto space-y-8">
 
-        {/* Sandbox Panel with Auth */}
+        {/* Top bar: Audit button (NEW) */}
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="text-2xl md:text-3xl font-bold">Lancelot Console</h1>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleAudit}
+              className="rounded-xl border px-3 py-2 bg-white"
+              title="Open KB Audit"
+            >
+              {auditOpen ? "Close KB Audit" : "Open KB Audit"}
+            </button>
+          </div>
+        </div>
+
+        {/* Audit panel (NEW) */}
+        {auditOpen && (
+          <section className="rounded-2xl border bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">KB Audit (Primary Area x Primary Issue)</h2>
+              <button
+                onClick={loadAudit}
+                className="rounded-xl border px-3 py-1 bg-white text-sm"
+              >
+                Refresh
+              </button>
+            </div>
+            {auditLoading && <div className="mt-2 text-sm">Loading…</div>}
+            {auditErr && <div className="mt-2 text-sm text-red-600">Error: {auditErr}</div>}
+            {!auditLoading && auditRows.length === 0 && !auditErr && (
+              <div className="mt-2 text-sm text-gray-500">No rows in audit view.</div>
+            )}
+            {auditRows.length > 0 && (
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left border-b">
+                      <th className="py-2 pr-3">Area (Primary)</th>
+                      <th className="py-2 pr-3">Issue (Primary)</th>
+                      <th className="py-2 pr-3">Total</th>
+                      <th className="py-2 pr-3">Missing Area (Secondary)</th>
+                      <th className="py-2 pr-3">Missing Issue (Secondary)</th>
+                      <th className="py-2 pr-3">Missing Summary</th>
+                      <th className="py-2 pr-3">Missing Source</th>
+                      <th className="py-2 pr-3">Dissertations</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditRows.map((r, idx) => (
+                      <tr key={idx} className="border-b last:border-0">
+                        <td className="py-2 pr-3">{r.area_primary || "—"}</td>
+                        <td className="py-2 pr-3">{r.issue_primary || "—"}</td>
+                        <td className="py-2 pr-3">{r.total_docs}</td>
+                        <td className="py-2 pr-3">{r.missing_area_secondary}</td>
+                        <td className="py-2 pr-3">{r.missing_issue_secondary}</td>
+                        <td className="py-2 pr-3">{r.missing_summary}</td>
+                        <td className="py-2 pr-3">{r.missing_source}</td>
+                        <td className="py-2 pr-3">{r.dissertations}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Sandbox Panel with Auth (unchanged) */}
         <section className="rounded-2xl border bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h2 className="text-xl font-semibold">Sandbox (24-hour temporary storage)</h2>
@@ -321,25 +363,9 @@ export default function Home() {
           <div className="mt-3 flex items-center gap-3 flex-wrap">
             {!session ? (
               <>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Email"
-                  className="rounded-xl border px-3 py-2"
-                />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Password"
-                  className="rounded-xl border px-3 py-2"
-                />
-                <button
-                  onClick={onSignIn}
-                  disabled={authBusy}
-                  className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50"
-                >
+                <input type="email" value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="Email" className="rounded-xl border px-3 py-2" />
+                <input type="password" value={password} onChange={(e)=>setPassword(e.target.value)} placeholder="Password" className="rounded-xl border px-3 py-2" />
+                <button onClick={onSignIn} disabled={authBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
                   {authBusy ? "Signing in…" : "Sign in"}
                 </button>
                 {authMsg && <span className="text-sm text-gray-600">{authMsg}</span>}
@@ -347,11 +373,7 @@ export default function Home() {
             ) : (
               <div className="flex items-center gap-3">
                 <span className="text-sm text-gray-700">Signed in</span>
-                <button
-                  onClick={onSignOut}
-                  disabled={authBusy}
-                  className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50"
-                >
+                <button onClick={onSignOut} disabled={authBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
                   {authBusy ? "Signing out…" : "Sign out"}
                 </button>
               </div>
@@ -360,65 +382,31 @@ export default function Home() {
 
           {/* Upload controls */}
           <div className="mt-3 flex items-center gap-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              onChange={onPickFile}
-              className="rounded-xl border px-3 py-2"
-              disabled={!session || uploading}
-            />
-            <button
-              onClick={loadMyFiles}
-              disabled={busy}
-              className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50"
-              title="Refresh list"
-            >
+            <input ref={fileInputRef} type="file" onChange={onPickFile} className="rounded-xl border px-3 py-2" disabled={!session || uploading} />
+            <button onClick={loadMyFiles} disabled={busy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50" title="Refresh list">
               Refresh
             </button>
             {uploading && <span className="text-sm">Uploading…</span>}
           </div>
 
-          {/* Errors */}
-          {sbErr && (
-            <div className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>
-          )}
-          {authMsg && session && (
-            <div className="mt-1 text-sm text-green-700">{authMsg}</div>
-          )}
+          {sbErr && <div className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>}
+          {authMsg && session && <div className="mt-1 text-sm text-green-700">{authMsg}</div>}
 
           {/* My Files list */}
           <div className="mt-4 grid grid-cols-1 gap-3">
-            {files.length === 0 && (
-              <div className="text-sm text-gray-500">No uploads yet.</div>
-            )}
-
+            {files.length === 0 && (<div className="text-sm text-gray-500">No uploads yet.</div>)}
             {files.map((f) => (
               <div key={f.id} className="flex items-center justify-between rounded-xl border p-3">
                 <div className="min-w-0">
                   <div className="font-medium truncate">{f.original_name}</div>
                   <div className="text-xs text-gray-500">
-                    {(f.size_bytes ?? 0).toLocaleString()} bytes · {f.mime || "file"} ·{" "}
-                    <span className="text-gray-600">{countdownText(f.expires_at)}</span>
-                    {f.status !== "active" && (
-                      <span className="ml-2 text-red-600">({f.status})</span>
-                    )}
+                    {(f.size_bytes ?? 0).toLocaleString()} bytes · {f.mime || "file"} · <span className="text-gray-600">{countdownText(f.expires_at)}</span>
+                    {f.status !== "active" && <span className="ml-2 text-red-600">({f.status})</span>}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => doDownload(f.file_key)}
-                    disabled={busy || f.status !== "active"}
-                    className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50"
-                  >
-                    Download
-                  </button>
-                  <button
-                    onClick={() => doDelete(f)}
-                    disabled={busy}
-                    className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
+                  <button onClick={()=>doDownload(f.file_key)} disabled={busy || f.status !== "active"} className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50">Download</button>
+                  <button onClick={()=>doDelete(f)} disabled={busy} className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50">Delete</button>
                 </div>
               </div>
             ))}
@@ -427,72 +415,38 @@ export default function Home() {
 
         {/* Evidence Tray */}
         <header className="space-y-2">
-          <h1 className="text-2xl md:text-3xl font-bold">Lancelot Evidence Tray</h1>
+          <h2 className="text-2xl md:text-3xl font-bold">Lancelot Evidence Tray</h2>
           <p className="text-sm md:text-base">
             Filters use normalized columns (<code>area_*</code>, <code>issue_*</code>, <code>is_dissertation</code>). Search targets <strong>title</strong> and <strong>summary</strong> only.
           </p>
         </header>
 
-        {/* Controls — split into Primary vs Secondary */}
+        {/* Controls — Primary & Secondary split */}
         <section className="grid grid-cols-1 md:grid-cols-6 gap-3">
-          <input
-            type="text"
-            value={q}
-            onChange={(e) => resetPageAnd(setQ)(e.target.value)}
-            placeholder="Search title or summary…"
-            className="md:col-span-2 w-full rounded-xl border px-3 py-2"
-          />
+          <input type="text" value={q} onChange={(e)=>resetPageAnd(setQ)(e.target.value)} placeholder="Search title or summary…" className="md:col-span-2 w-full rounded-xl border px-3 py-2" />
 
-          <select
-            value={areaP}
-            onChange={(e) => resetPageAnd(setAreaP)(e.target.value)}
-            className="w-full rounded-xl border px-3 py-2"
-          >
+          <select value={areaP} onChange={(e)=>resetPageAnd(setAreaP)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
             <option value="">Area (Primary)</option>
-            {AREAS.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
+            {AREAS.map((a)=> (<option key={a} value={a}>{a}</option>))}
           </select>
 
-          <select
-            value={issueP}
-            onChange={(e) => resetPageAnd(setIssueP)(e.target.value)}
-            className="w-full rounded-xl border px-3 py-2"
-          >
+          <select value={issueP} onChange={(e)=>resetPageAnd(setIssueP)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
             <option value="">Issue (Primary)</option>
-            {ISSUES.map((i) => (
-              <option key={i} value={i}>{i}</option>
-            ))}
+            {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
           </select>
 
-          <select
-            value={areaS}
-            onChange={(e) => resetPageAnd(setAreaS)(e.target.value)}
-            className="w-full rounded-xl border px-3 py-2"
-          >
+          <select value={areaS} onChange={(e)=>resetPageAnd(setAreaS)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
             <option value="">Area (Secondary)</option>
-            {AREAS.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
+            {AREAS.map((a)=> (<option key={a} value={a}>{a}</option>))}
           </select>
 
-          <select
-            value={issueS}
-            onChange={(e) => resetPageAnd(setIssueS)(e.target.value)}
-            className="w-full rounded-xl border px-3 py-2"
-          >
+          <select value={issueS} onChange={(e)=>resetPageAnd(setIssueS)(e.target.value)} className="w-full rounded-xl border px-3 py-2">
             <option value="">Issue (Secondary)</option>
-            {ISSUES.map((i) => (
-              <option key={i} value={i}>{i}</option>
-            ))}
+            {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
           </select>
 
           <label className="flex items-center gap-2 rounded-xl border px-3 py-2 bg-white">
-            <input
-              type="checkbox"
-              checked={dissertationsOnly}
-              onChange={(e) => resetPageAnd(setDissertationsOnly)(e.target.checked)}
-            />
+            <input type="checkbox" checked={dissertationsOnly} onChange={(e)=>resetPageAnd(setDissertationsOnly)(e.target.checked)} />
             <span>Dissertations only</span>
           </label>
         </section>
@@ -508,14 +462,10 @@ export default function Home() {
           {rows.map((r) => (
             <article key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-4">
-                <h2 className="text-lg font-semibold">{r.title}</h2>
-                {r.is_dissertation && (
-                  <span className="text-xs px-2 py-1 rounded-full border">Dissertation</span>
-                )}
+                <h3 className="text-lg font-semibold">{r.title}</h3>
+                {r.is_dissertation && <span className="text-xs px-2 py-1 rounded-full border">Dissertation</span>}
               </div>
-              {r.summary && (
-                <p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>
-              )}
+              {r.summary && (<p className="mt-2 text-sm leading-relaxed line-clamp-4">{r.summary}</p>)}
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 {r.area_primary && <span className="px-2 py-1 rounded-full border">{r.area_primary}</span>}
                 {r.area_secondary && <span className="px-2 py-1 rounded-full border">{r.area_secondary}</span>}
@@ -523,39 +473,22 @@ export default function Home() {
                 {r.issue_secondary && <span className="px-2 py-1 rounded-full border">{r.issue_secondary}</span>}
               </div>
               <div className="mt-3 flex items-center gap-3 text-xs">
-                {r.source_url && (
-                  <a href={r.source_url} target="_blank" rel="noreferrer" className="underline">
-                    Open source
-                  </a>
-                )}
-                {r.tags && <span className="text-gray-500 truncate">tags: {r.tags}</span>}
+                {r.source_url && (<a href={r.source_url} target="_blank" rel="noreferrer" className="underline">Open source</a>)}
+                {r.tags && (<span className="text-gray-500 truncate">tags: {r.tags}</span>)}
               </div>
             </article>
           ))}
 
-          {!loading && rows.length === 0 && (
-            <div className="text-sm text-gray-500">No results. Try adjusting filters.</div>
-          )}
+          {!loading && rows.length === 0 && (<div className="text-sm text-gray-500">No results. Try adjusting filters.</div>)}
         </section>
 
         {/* Pagination */}
         <section className="flex items-center justify-between">
-          <button
-            disabled={page <= 1 || loading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="rounded-xl border px-3 py-2 disabled:opacity-50 bg-white"
-          >
-            ← Prev
-          </button>
+          <button disabled={page <= 1 || loading} onClick={()=>setPage((p)=>Math.max(1,p-1))} className="rounded-xl border px-3 py-2 disabled:opacity-50 bg-white">← Prev</button>
           <div className="text-sm">Page {page} of {totalPages}</div>
-          <button
-            disabled={page >= totalPages || loading}
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            className="rounded-xl border px-3 py-2 disabled:opacity-50 bg-white"
-          >
-            Next →
-          </button>
+          <button disabled={page >= totalPages || loading} onClick={()=>setPage((p)=>Math.min(totalPages,p+1))} className="rounded-xl border px-3 py-2 disabled:opacity-50 bg-white">Next →</button>
         </section>
+
       </div>
     </div>
   );

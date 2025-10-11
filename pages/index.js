@@ -1,6 +1,6 @@
 // ===========================================
-// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit + Admin Exports
-// Step 7 complete: 7a (layout+audit), 7b (admin exports + cleanup), 7c (A11y/mobile polish)
+// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit + Admin Exports + QA Report
+// Step 7 complete + Step 8a/b: Snoopy v0 wired + QA Report panel
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -50,7 +50,7 @@ export default function Home() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authMsg, setAuthMsg] = useState("");
 
-  // -------- Audit panel state --------
+  // -------- Audit panel --------
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditRows, setAuditRows] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -60,6 +60,13 @@ export default function Home() {
   const [adminMsg, setAdminMsg] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+
+  // -------- QA Report panel (NEW) --------
+  const [qaOpen, setQaOpen] = useState(false);
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaErr, setQaErr] = useState("");
+  const [qaRun, setQaRun] = useState(null);        // { run_id, created_at }
+  const [qaChecks, setQaChecks] = useState([]);    // rows for that run_id
 
   // ===== Evidence Tray effects =====
   useEffect(() => {
@@ -298,9 +305,8 @@ export default function Home() {
     const esc = (v) =>
       `"${String(v ?? "").replace(/"/g, '""').replace(/\r?\n|\r/g, " ")}"`;
     const head = headers.map(esc).join(",");
-    const body = rows.map((r) =>
-      headers.map((h) => esc(r[h])).join(",")
-    ).join("\n");
+    theBody:
+    const body = rows.map((r) => headers.map((h) => esc(r[h])).join(",")).join("\n");
     return `${head}\n${body}`;
   };
 
@@ -381,15 +387,66 @@ export default function Home() {
     }
   };
 
+  // ===== QA helpers (NEW) =====
+  const statusPill = (s) => {
+    const cls =
+      s === "pass" ? "bg-green-100 text-green-800 border-green-200" :
+      s === "warn" ? "bg-yellow-100 text-yellow-800 border-yellow-200" :
+      "bg-red-100 text-red-800 border-red-200";
+    return <span className={`px-2 py-0.5 rounded-full border text-xs ${cls}`}>{s}</span>;
+  };
+
+  const toggleQa = async () => {
+    const open = !qaOpen;
+    setQaOpen(open);
+    if (open && !qaRun) await loadQa();
+  };
+
+  const loadQa = async () => {
+    setQaLoading(true); setQaErr(""); setQaChecks([]); setQaRun(null);
+    try {
+      // Get latest run_id
+      const { data: latest, error: e1 } = await supabase
+        .from("qa_reports")
+        .select("run_id, created_at")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (e1) throw e1;
+      if (!latest || latest.length === 0) {
+        setQaErr("No QA runs found yet.");
+        return;
+      }
+      const run = latest[0];
+      setQaRun(run);
+
+      // Get checks for that run_id (exclude the raw payload in the select to keep payloads small)
+      const { data: checks, error: e2 } = await supabase
+        .from("qa_reports")
+        .select("check_name,status,details,created_at")
+        .eq("run_id", run.run_id)
+        .order("created_at", { ascending: true });
+      if (e2) throw e2;
+
+      setQaChecks(checks || []);
+    } catch (e) {
+      setQaErr(e.message || "Failed to load QA report.");
+    } finally {
+      setQaLoading(false);
+    }
+  };
+
   // ===== UI =====
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
       <div className="max-w-6xl mx-auto space-y-6">
 
-        {/* Top bar: Audit + Admin */}
+        {/* Top bar: Audit + Admin + QA (NEW) */}
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Console</h1>
           <div className="flex items-center gap-2">
+            <button onClick={toggleQa} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white">
+              {qaOpen ? "Close QA Report" : "Open QA Report"}
+            </button>
             <button onClick={toggleAudit} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white">
               {auditOpen ? "Close KB Audit" : "Open KB Audit"}
             </button>
@@ -405,6 +462,48 @@ export default function Home() {
           </div>
         </div>
         {adminMsg && <div aria-live="polite" className="text-xs text-gray-600">Admin: {adminMsg}</div>}
+
+        {/* QA Report panel (NEW) */}
+        {qaOpen && (
+          <section className="rounded-2xl border bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">QA Report (latest run)</h2>
+              <button onClick={loadQa} className="rounded-xl border px-3 py-1 min-h-[40px] bg-white text-sm">Refresh</button>
+            </div>
+
+            {qaLoading && <div className="mt-2 text-sm">Loading…</div>}
+            {qaErr && <div aria-live="polite" className="mt-2 text-sm text-red-600">Error: {qaErr}</div>}
+
+            {!qaLoading && qaRun && (
+              <div className="mt-2 text-xs text-gray-600">
+                <span className="font-medium">Run ID:</span> {qaRun.run_id} · <span className="font-medium">At:</span> {new Date(qaRun.created_at).toLocaleString()}
+              </div>
+            )}
+
+            {!qaLoading && qaChecks.length > 0 && (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                {qaChecks.map((c, i) => (
+                  <div key={i} className="rounded-xl border p-3 bg-white">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">{c.check_name}</div>
+                      {statusPill(c.status)}
+                    </div>
+                    {c.details && (
+                      <div className="mt-1 text-xs text-gray-700">{c.details}</div>
+                    )}
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      {new Date(c.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!qaLoading && !qaErr && qaChecks.length === 0 && (
+              <div className="mt-2 text-sm text-gray-500">No QA records yet.</div>
+            )}
+          </section>
+        )}
 
         {/* Audit panel */}
         {auditOpen && (
@@ -499,7 +598,6 @@ export default function Home() {
             {uploading && <span className="text-sm">Uploading…</span>}
           </div>
 
-          {/* Errors / Messages with aria-live */}
           {sbErr && <div aria-live="polite" className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>}
           {authMsg && session && <div aria-live="polite" className="mt-1 text-sm text-green-700">{authMsg}</div>}
 
@@ -612,7 +710,7 @@ export default function Home() {
         <section className="flex items-center justify-between">
           <button disabled={page <= 1 || loading} onClick={()=>setPage((p)=>Math.max(1,p-1))} className="rounded-xl border px-3 py-2 min-h-[40px] disabled:opacity-50 bg-white">← Prev</button>
           <div className="text-sm">Page {page} of {totalPages}</div>
-          <button disabled={page >= totalPages || loading} onClick={()=>setPage((p)=>Math.min(1*totalPages,p+1))} className="rounded-xl border px-3 py-2 min-h-[40px] disabled:opacity-50 bg-white">Next →</button>
+          <button disabled={page >= totalPages || loading} onClick={()=>setPage((p)=>Math.min(totalPages,p+1))} className="rounded-xl border px-3 py-2 min-h-[40px] disabled:opacity-50 bg-white">Next →</button>
         </section>
 
       </div>

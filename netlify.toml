@@ -18,3 +18,9 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+# Snoopy QA — run at minute 15 each hour, offset from cleanup on :00
+[[scheduled.functions]]
+  name = "snoopy-run"
+  cron = "15 * * * *"
+

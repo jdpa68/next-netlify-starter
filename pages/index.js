@@ -1,6 +1,6 @@
 // ===========================================
 // Lancelot Console — Evidence Tray + Sandbox + Auth + Audit + Admin Exports
-// Step 7b: Add "Export Audit CSV" + "Export Tray CSV"
+// Step 7 complete: 7a (layout+audit), 7b (admin exports + cleanup), 7c (A11y/mobile polish)
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -293,7 +293,7 @@ export default function Home() {
     }
   };
 
-  // ===== CSV helpers (NEW) =====
+  // ===== CSV helpers =====
   const toCSV = (rows, headers) => {
     const esc = (v) =>
       `"${String(v ?? "").replace(/"/g, '""').replace(/\r?\n|\r/g, " ")}"`;
@@ -315,9 +315,7 @@ export default function Home() {
   const exportAuditCSV = async () => {
     setExportBusy(true);
     try {
-      if (auditRows.length === 0) {
-        await loadAudit();
-      }
+      if (auditRows.length === 0) await loadAudit();
       const rowsToExport = auditRows.length ? auditRows : [];
       const headers = [
         "area_primary","issue_primary","total_docs",
@@ -334,7 +332,6 @@ export default function Home() {
   const exportTrayCSV = async () => {
     setExportBusy(true);
     try {
-      // Re-run the current query but fetch up to 1000 for export
       let query = supabase
         .from("knowledge_base")
         .select(
@@ -393,31 +390,31 @@ export default function Home() {
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Console</h1>
           <div className="flex items-center gap-2">
-            <button onClick={toggleAudit} className="rounded-xl border px-3 py-2 bg-white">
+            <button onClick={toggleAudit} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white">
               {auditOpen ? "Close KB Audit" : "Open KB Audit"}
             </button>
-            <button onClick={exportAuditCSV} disabled={exportBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+            <button onClick={exportAuditCSV} disabled={exportBusy} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white disabled:opacity-50">
               {exportBusy ? "Exporting…" : "Export Audit CSV"}
             </button>
-            <button onClick={exportTrayCSV} disabled={exportBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+            <button onClick={exportTrayCSV} disabled={exportBusy} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white disabled:opacity-50">
               {exportBusy ? "Exporting…" : "Export Tray CSV"}
             </button>
-            <button onClick={runCleanupNow} disabled={adminBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+            <button onClick={runCleanupNow} disabled={adminBusy} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white disabled:opacity-50">
               {adminBusy ? "Running…" : "Run cleanup now"}
             </button>
           </div>
         </div>
-        {adminMsg && <div className="text-xs text-gray-600">Admin: {adminMsg}</div>}
+        {adminMsg && <div aria-live="polite" className="text-xs text-gray-600">Admin: {adminMsg}</div>}
 
         {/* Audit panel */}
         {auditOpen && (
           <section className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">KB Audit (Primary Area × Primary Issue)</h2>
-              <button onClick={loadAudit} className="rounded-xl border px-3 py-1 bg-white text-sm">Refresh</button>
+              <button onClick={loadAudit} className="rounded-xl border px-3 py-1 min-h-[40px] bg-white text-sm">Refresh</button>
             </div>
             {auditLoading && <div className="mt-2 text-sm">Loading…</div>}
-            {auditErr && <div className="mt-2 text-sm text-red-600">Error: {auditErr}</div>}
+            {auditErr && <div aria-live="polite" className="mt-2 text-sm text-red-600">Error: {auditErr}</div>}
             {!auditLoading && auditRows.length === 0 && !auditErr && (
               <div className="mt-2 text-sm text-gray-500">No rows in audit view.</div>
             )}
@@ -456,7 +453,7 @@ export default function Home() {
           </section>
         )}
 
-        {/* Sandbox Panel with Auth (unchanged) */}
+        {/* Sandbox Panel with Auth */}
         <section className="rounded-2xl border bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h2 className="text-xl font-semibold">Sandbox (24-hour temporary storage)</h2>
@@ -471,7 +468,7 @@ export default function Home() {
               <>
                 <input type="email" value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="Email" className="rounded-xl border px-3 py-2" />
                 <input type="password" value={password} onChange={(e)=>setPassword(e.target.value)} placeholder="Password" className="rounded-xl border px-3 py-2" />
-                <button onClick={onSignIn} disabled={authBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+                <button onClick={onSignIn} disabled={authBusy} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white disabled:opacity-50">
                   {authBusy ? "Signing in…" : "Sign in"}
                 </button>
                 {authMsg && <span className="text-sm text-gray-600">{authMsg}</span>}
@@ -479,7 +476,7 @@ export default function Home() {
             ) : (
               <div className="flex items-center gap-3">
                 <span className="text-sm text-gray-700">Signed in</span>
-                <button onClick={onSignOut} disabled={authBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+                <button onClick={onSignOut} disabled={authBusy} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white disabled:opacity-50">
                   {authBusy ? "Signing out…" : "Sign out"}
                 </button>
               </div>
@@ -488,15 +485,23 @@ export default function Home() {
 
           {/* Upload controls */}
           <div className="mt-3 flex items-center gap-3">
-            <input ref={fileInputRef} type="file" onChange={onPickFile} className="rounded-xl border px-3 py-2" disabled={!session || uploading} />
-            <button onClick={loadMyFiles} disabled={busy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50" title="Refresh list">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip,.png,.jpg,.jpeg"
+              onChange={onPickFile}
+              className="rounded-xl border px-3 py-2"
+              disabled={!session || uploading}
+            />
+            <button onClick={loadMyFiles} disabled={busy} className="rounded-xl border px-3 py-2 min-h-[40px] bg-white disabled:opacity-50" title="Refresh list">
               Refresh
             </button>
             {uploading && <span className="text-sm">Uploading…</span>}
           </div>
 
-          {sbErr && <div className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>}
-          {authMsg && session && <div className="mt-1 text-sm text-green-700">{authMsg}</div>}
+          {/* Errors / Messages with aria-live */}
+          {sbErr && <div aria-live="polite" className="mt-2 text-sm text-red-600 font-medium">Error: {sbErr}</div>}
+          {authMsg && session && <div aria-live="polite" className="mt-1 text-sm text-green-700">{authMsg}</div>}
 
           {/* My Files list */}
           <div className="mt-4 grid grid-cols-1 gap-3">
@@ -511,8 +516,8 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={()=>doDownload(f.file_key)} disabled={busy || f.status !== "active"} className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50">Download</button>
-                  <button onClick={()=>doDelete(f)} disabled={busy} className="rounded-xl border px-3 py-1 bg-white text-sm disabled:opacity-50">Delete</button>
+                  <button onClick={()=>doDownload(f.file_key)} disabled={busy || f.status !== "active"} className="rounded-xl border px-3 py-1 min-h-[40px] bg-white text-sm disabled:opacity-50">Download</button>
+                  <button onClick={()=>doDelete(f)} disabled={busy} className="rounded-xl border px-3 py-1 min-h-[40px] bg-white text-sm disabled:opacity-50">Delete</button>
                 </div>
               </div>
             ))}
@@ -564,7 +569,7 @@ export default function Home() {
             </label>
             <button
               onClick={() => { setAreaP(""); setAreaS(""); setIssueP(""); setIssueS(""); setDissertationsOnly(false); setQ(""); setPage(1); if (typeof window !== "undefined") window.scrollTo(0, 0); }}
-              className="rounded-xl border px-3 py-2 bg-white"
+              className="rounded-xl border px-3 py-2 min-h-[40px] bg-white"
               title="Clear filters"
             >
               Refresh
@@ -605,9 +610,9 @@ export default function Home() {
 
         {/* Pagination */}
         <section className="flex items-center justify-between">
-          <button disabled={page <= 1 || loading} onClick={()=>setPage((p)=>Math.max(1,p-1))} className="rounded-xl border px-3 py-2 disabled:opacity-50 bg-white">← Prev</button>
+          <button disabled={page <= 1 || loading} onClick={()=>setPage((p)=>Math.max(1,p-1))} className="rounded-xl border px-3 py-2 min-h-[40px] disabled:opacity-50 bg-white">← Prev</button>
           <div className="text-sm">Page {page} of {totalPages}</div>
-          <button disabled={page >= totalPages || loading} onClick={()=>setPage((p)=>Math.min(totalPages,p+1))} className="rounded-xl border px-3 py-2 disabled:opacity-50 bg-white">Next →</button>
+          <button disabled={page >= totalPages || loading} onClick={()=>setPage((p)=>Math.min(1*totalPages,p+1))} className="rounded-xl border px-3 py-2 min-h-[40px] disabled:opacity-50 bg-white">Next →</button>
         </section>
 
       </div>

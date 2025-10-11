@@ -1,7 +1,5 @@
 // ===========================================
-// Lancelot (Public App) — Minimal Assistant UI
-// Uses Supabase to pull top evidence and renders a clean answer + citations
-// Env: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, APP_MODE=assistant
+// Lancelot (Public App) — Assistant UI (smarter search + fallback)
 // ===========================================
 
 import { useState } from "react";
@@ -16,52 +14,72 @@ export default function AppHome() {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [answer, setAnswer] = useState("");
-  const [sources, setSources] = useState([]); // [{title, url}]
+  const [sources, setSources] = useState([]);
   const [error, setError] = useState("");
   const [showCites, setShowCites] = useState(false);
 
   const ask = async (e) => {
     e?.preventDefault?.();
-    if (!q.trim()) return;
+    const term = (q || "").trim();
+    if (!term) return;
+
     setLoading(true);
-    setError(""); setAnswer(""); setSources([]);
+    setError(""); setAnswer(""); setSources([]); setShowCites(false);
 
     try {
-      // --- 1) Pull top evidence by simple ilike search over title+summary ---
-      //      (You can replace this with your RAG/LLM call later; this is safe & fast.)
-      const term = q.trim();
-
-      // Pull top 6 candidates
+      // --- pass 1: phrase search over title + summary ---
       let { data, error: kbErr } = await supabase
         .from("knowledge_base")
         .select("id,title,summary,source_url,area_primary,issue_primary,is_dissertation")
         .or(`title.ilike.%${term}%,summary.ilike.%${term}%`)
         .order("id", { ascending: false })
-        .limit(6);
-
+        .limit(8);
       if (kbErr) throw kbErr;
 
-      data = data || [];
+      // --- pass 2: token search (split on spaces, ≥ 3 chars), OR across tokens ---
+      if (!data || data.length === 0) {
+        const tokens = Array.from(new Set(term.toLowerCase().split(/\s+/).filter(t => t.length >= 3)));
+        if (tokens.length > 0) {
+          const orClause = tokens.map(t => `title.ilike.%${t}%,summary.ilike.%${t}%`).join(",");
+          const { data: d2, error: e2 } = await supabase
+            .from("knowledge_base")
+            .select("id,title,summary,source_url,area_primary,issue_primary,is_dissertation")
+            .or(orClause)
+            .order("id", { ascending: false })
+            .limit(8);
+          if (e2) throw e2;
+          data = d2 || [];
+        }
+      }
 
-      // --- 2) Compose a simple, structured answer (rules-based for MVP) ---
+      // --- pass 3: fallback if still empty — show recent helpful docs ---
+      let note = "";
+      if (!data || data.length === 0) {
+        const { data: d3, error: e3 } = await supabase
+          .from("knowledge_base")
+          .select("id,title,summary,source_url,area_primary,issue_primary,is_dissertation")
+          .order("id", { ascending: false })
+          .limit(6);
+        if (e3) throw e3;
+        data = d3 || [];
+        note = "I didn’t find an exact match, so here are recent, relevant sources from your Knowledge Base.";
+      }
+
+      // Build answer
       const aPrimary = topCount(data.map(d => d.area_primary));
       const iPrimary = topCount(data.map(d => d.issue_primary));
 
       const opening = [
-        `Here’s a concise answer grounded in your Knowledge Base.`,
-        aPrimary ? `Most relevant area: **${aPrimary}**.` : ``,
-        iPrimary ? `Key issue in play: **${iPrimary}**.` : ``,
+        note || "Here’s a concise answer grounded in your Knowledge Base.",
+        aPrimary ? `Most relevant area: **${aPrimary}**.` : "",
+        iPrimary ? `Key issue in play: **${iPrimary}**.` : ""
       ].filter(Boolean).join(" ");
 
-      const bullets = data.slice(0, 3).map(d => `• **${d.title}** — ${trim(d.summary, 220)}`);
+      const bullets = data.slice(0, 4).map(d => `• **${d.title}** — ${trim(d.summary, 220)}`);
+      const closing = "Open the citations to review the top sources I used.";
 
-      const closing = `Open the citations to review the top sources I used.`;
+      setAnswer([opening, "", ...bullets, bullets.length ? "" : "", closing].join("\n"));
 
-      setAnswer(
-        [opening, "", ...bullets, "", closing].join("\n")
-      );
-
-      // --- 3) Collect citations ---
       setSources(
         data.map(d => ({
           title: d.title,
@@ -74,8 +92,8 @@ export default function AppHome() {
         }))
       );
       setShowCites(true);
-    } catch (e) {
-      setError(e.message || "Something went wrong.");
+    } catch (e2) {
+      setError(e2.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -84,7 +102,6 @@ export default function AppHome() {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <main className="max-w-3xl mx-auto p-6 md:p-10 space-y-6">
-        {/* Header */}
         <header className="space-y-1">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot</h1>
           <p className="text-sm text-gray-600">
@@ -100,17 +117,12 @@ export default function AppHome() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Ask Lancelot… e.g., ‘How can we reduce summer melt?’"
-              className="flex-1 min-w-[220px] rounded-xl border px-3 py-2"
+              className="flex-1 min-w-[240px] rounded-xl border px-3 py-2"
             />
-            <button
-              type="submit"
-              disabled={loading}
-              className="rounded-xl border px-4 py-2 bg-white disabled:opacity-50"
-            >
+            <button type="submit" disabled={loading} className="rounded-xl border px-4 py-2 bg-white disabled:opacity-50">
               {loading ? "Thinking…" : "Ask"}
             </button>
           </form>
-
           {error && <div aria-live="polite" className="mt-3 text-sm text-red-600">Error: {error}</div>}
         </section>
 
@@ -119,10 +131,7 @@ export default function AppHome() {
           <section className="rounded-2xl border bg-white p-4 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Answer</h2>
-              <button
-                onClick={() => setShowCites((v) => !v)}
-                className="rounded-xl border px-3 py-2 bg-white text-sm"
-              >
+              <button onClick={() => setShowCites((v) => !v)} className="rounded-xl border px-3 py-2 bg-white text-sm">
                 {showCites ? "Hide citations" : "Show citations"}
               </button>
             </div>
@@ -147,18 +156,11 @@ export default function AppHome() {
                 <ul className="space-y-1">
                   {sources.map((s, i) => (
                     <li key={i} className="text-sm">
-                      <a
-                        className="underline"
-                        href={s.url || "#"}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
+                      <a className="underline" href={s.url || "#"} target="_blank" rel="noreferrer">
                         {s.title}
                       </a>
                       {s.flags?.length > 0 && (
-                        <span className="ml-2 text-xs text-gray-600">
-                          ({s.flags.join(" · ")})
-                        </span>
+                        <span className="ml-2 text-xs text-gray-600">({s.flags.join(" · ")})</span>
                       )}
                       {!s.url && <span className="ml-2 text-xs text-gray-500">(no external link)</span>}
                     </li>
@@ -169,7 +171,6 @@ export default function AppHome() {
           </section>
         )}
 
-        {/* Footer note */}
         <footer className="text-xs text-gray-500">
           Beta — not legal/financial advice. Sources may include internal summaries and public documents.
         </footer>
@@ -178,7 +179,7 @@ export default function AppHome() {
   );
 }
 
-// --------- tiny helpers ----------
+// -------- helpers --------
 function trim(s, n) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -198,6 +199,5 @@ function topCount(list) {
 }
 
 function mdBold(line) {
-  // very small **bold** renderer for the answer
   return line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 }

@@ -1,6 +1,6 @@
 // ===========================================
-// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit
-// Step 7a-3: polish labels/spacing + filter badge + 'Run cleanup now'
+// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit + Admin Exports
+// Step 7b: Add "Export Audit CSV" + "Export Tray CSV"
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -56,9 +56,10 @@ export default function Home() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditErr, setAuditErr] = useState("");
 
-  // -------- Admin utility state (Run cleanup now) --------
+  // -------- Admin utilities --------
   const [adminMsg, setAdminMsg] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
 
   // ===== Evidence Tray effects =====
   useEffect(() => {
@@ -281,7 +282,7 @@ export default function Home() {
         .select("*")
         .order("area_primary", { ascending: true })
         .order("issue_primary", { ascending: true })
-        .limit(100);
+        .limit(1000);
       if (error) throw error;
       setAuditRows(data || []);
     } catch (e) {
@@ -289,6 +290,83 @@ export default function Home() {
       setAuditRows([]);
     } finally {
       setAuditLoading(false);
+    }
+  };
+
+  // ===== CSV helpers (NEW) =====
+  const toCSV = (rows, headers) => {
+    const esc = (v) =>
+      `"${String(v ?? "").replace(/"/g, '""').replace(/\r?\n|\r/g, " ")}"`;
+    const head = headers.map(esc).join(",");
+    const body = rows.map((r) =>
+      headers.map((h) => esc(r[h])).join(",")
+    ).join("\n");
+    return `${head}\n${body}`;
+  };
+
+  const downloadCSV = (csvText, filename) => {
+    const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportAuditCSV = async () => {
+    setExportBusy(true);
+    try {
+      if (auditRows.length === 0) {
+        await loadAudit();
+      }
+      const rowsToExport = auditRows.length ? auditRows : [];
+      const headers = [
+        "area_primary","issue_primary","total_docs",
+        "missing_area_secondary","missing_issue_secondary",
+        "missing_summary","missing_source","dissertations"
+      ];
+      const csv = toCSV(rowsToExport, headers);
+      downloadCSV(csv, "kb_audit.csv");
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const exportTrayCSV = async () => {
+    setExportBusy(true);
+    try {
+      // Re-run the current query but fetch up to 1000 for export
+      let query = supabase
+        .from("knowledge_base")
+        .select(
+          "id,title,source_url,area_primary,area_secondary,issue_primary,issue_secondary,is_dissertation,summary",
+          { count: "exact" }
+        )
+        .order("id", { ascending: false })
+        .limit(1000);
+
+      if (areaP) query = query.eq("area_primary", areaP);
+      if (areaS) query = query.eq("area_secondary", areaS);
+      if (issueP) query = query.eq("issue_primary", issueP);
+      if (issueS) query = query.eq("issue_secondary", issueS);
+      if (dissertationsOnly) query = query.eq("is_dissertation", true);
+      if (q && q.trim().length > 0) {
+        const term = q.trim();
+        query = query.or(`title.ilike.%${term}%,summary.ilike.%${term}%`);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const headers = [
+        "id","title","source_url",
+        "area_primary","area_secondary",
+        "issue_primary","issue_secondary",
+        "is_dissertation","summary"
+      ];
+      const csv = toCSV(data || [], headers);
+      downloadCSV(csv, "evidence_tray_export.csv");
+    } finally {
+      setExportBusy(false);
     }
   };
 
@@ -318,6 +396,12 @@ export default function Home() {
             <button onClick={toggleAudit} className="rounded-xl border px-3 py-2 bg-white">
               {auditOpen ? "Close KB Audit" : "Open KB Audit"}
             </button>
+            <button onClick={exportAuditCSV} disabled={exportBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+              {exportBusy ? "Exporting…" : "Export Audit CSV"}
+            </button>
+            <button onClick={exportTrayCSV} disabled={exportBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
+              {exportBusy ? "Exporting…" : "Export Tray CSV"}
+            </button>
             <button onClick={runCleanupNow} disabled={adminBusy} className="rounded-xl border px-3 py-2 bg-white disabled:opacity-50">
               {adminBusy ? "Running…" : "Run cleanup now"}
             </button>
@@ -325,7 +409,7 @@ export default function Home() {
         </div>
         {adminMsg && <div className="text-xs text-gray-600">Admin: {adminMsg}</div>}
 
-        {/* Audit panel (unchanged from 7a-2) */}
+        {/* Audit panel */}
         {auditOpen && (
           <section className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
@@ -456,7 +540,6 @@ export default function Home() {
               <option value="">Issue (Primary)</option>
               {ISSUES.map((i)=> (<option key={i} value={i}>{i}</option>))}
             </select>
-            {/* Active filters badge */}
             <div className="md:col-span-2 flex items-center">
               <span className="ml-auto text-xs px-2 py-1 rounded-full border bg-white">
                 Active filters: {activeFilters}

@@ -1,6 +1,6 @@
 // ===========================================
-// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit + Admin Exports + QA Report
-// Step 7 complete + Step 8a/b: Snoopy v0 wired + QA Report panel
+// Lancelot Console — Evidence Tray + Sandbox + Auth + Audit + Admin Exports + QA Report + QA Trend
+// Step 7 complete + Step 8 complete: Snoopy v1 wired, QA Report panel, 14-day trend
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -61,12 +61,17 @@ export default function Home() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
 
-  // -------- QA Report panel (NEW) --------
+  // -------- QA Report panel --------
   const [qaOpen, setQaOpen] = useState(false);
   const [qaLoading, setQaLoading] = useState(false);
   const [qaErr, setQaErr] = useState("");
   const [qaRun, setQaRun] = useState(null);        // { run_id, created_at }
   const [qaChecks, setQaChecks] = useState([]);    // rows for that run_id
+
+  // -------- QA Trend (last 14 days) --------
+  const [trendLoading, setTrendLoading] = useState(false);
+  const [trendErr, setTrendErr] = useState("");
+  const [trendRows, setTrendRows] = useState([]);  // [{day, pass, warn, fail, total}]
 
   // ===== Evidence Tray effects =====
   useEffect(() => {
@@ -386,7 +391,7 @@ export default function Home() {
     }
   };
 
-  // ===== QA helpers (NEW) =====
+  // ===== QA helpers =====
   const statusPill = (s) => {
     const cls =
       s === "pass" ? "bg-green-100 text-green-800 border-green-200" :
@@ -399,12 +404,12 @@ export default function Home() {
     const open = !qaOpen;
     setQaOpen(open);
     if (open && !qaRun) await loadQa();
+    if (open && trendRows.length === 0) await loadQaTrend();
   };
 
   const loadQa = async () => {
     setQaLoading(true); setQaErr(""); setQaChecks([]); setQaRun(null);
     try {
-      // Get latest run_id
       const { data: latest, error: e1 } = await supabase
         .from("qa_reports")
         .select("run_id, created_at")
@@ -418,7 +423,6 @@ export default function Home() {
       const run = latest[0];
       setQaRun(run);
 
-      // Get checks for that run_id (exclude the raw payload in the select to keep payloads small)
       const { data: checks, error: e2 } = await supabase
         .from("qa_reports")
         .select("check_name,status,details,created_at")
@@ -434,12 +438,56 @@ export default function Home() {
     }
   };
 
+  // Build the last 14 calendar days as keys
+  const last14Keys = () => {
+    const days = [];
+    const d = new Date();
+    for (let i = 13; i >= 0; i--) {
+      const dd = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
+      days.push(dd.toISOString().slice(0, 10));
+    }
+    return days;
+  };
+
+  const loadQaTrend = async () => {
+    setTrendLoading(true); setTrendErr(""); setTrendRows([]);
+    try {
+      const since = new Date();
+      since.setDate(since.getDate() - 14);
+      const { data, error } = await supabase
+        .from("qa_reports")
+        .select("created_at,status")
+        .gte("created_at", since.toISOString())
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+
+      // Group by date + status
+      const keys = last14Keys();
+      const map = new Map(keys.map(k => [k, { day: k, pass: 0, warn: 0, fail: 0, total: 0 }]));
+      (data || []).forEach(r => {
+        const day = new Date(r.created_at).toISOString().slice(0,10);
+        if (map.has(day)) {
+          const bucket = map.get(day);
+          if (r.status === "pass") bucket.pass++;
+          else if (r.status === "warn") bucket.warn++;
+          else if (r.status === "fail") bucket.fail++;
+          bucket.total++;
+        }
+      });
+      setTrendRows(Array.from(map.values()));
+    } catch (e) {
+      setTrendErr(e.message || "Failed to load QA trend.");
+    } finally {
+      setTrendLoading(false);
+    }
+  };
+
   // ===== UI =====
   return (
     <div className="min-h-screen p-6 md:p-10 bg-gray-50 text-gray-900">
       <div className="max-w-6xl mx-auto space-y-6">
 
-        {/* Top bar: Audit + Admin + QA (NEW) */}
+        {/* Top bar: QA + Audit + Admin */}
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-2xl md:text-3xl font-bold">Lancelot Console</h1>
           <div className="flex items-center gap-2">
@@ -462,12 +510,12 @@ export default function Home() {
         </div>
         {adminMsg && <div aria-live="polite" className="text-xs text-gray-600">Admin: {adminMsg}</div>}
 
-        {/* QA Report panel (NEW) */}
+        {/* QA Report panel + Trend */}
         {qaOpen && (
           <section className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">QA Report (latest run)</h2>
-              <button onClick={loadQa} className="rounded-xl border px-3 py-1 min-h-[40px] bg-white text-sm">Refresh</button>
+              <button onClick={() => { loadQa(); loadQaTrend(); }} className="rounded-xl border px-3 py-1 min-h-[40px] bg-white text-sm">Refresh</button>
             </div>
 
             {qaLoading && <div className="mt-2 text-sm">Loading…</div>}
@@ -487,9 +535,7 @@ export default function Home() {
                       <div className="text-sm font-semibold">{c.check_name}</div>
                       {statusPill(c.status)}
                     </div>
-                    {c.details && (
-                      <div className="mt-1 text-xs text-gray-700">{c.details}</div>
-                    )}
+                    {c.details && <div className="mt-1 text-xs text-gray-700">{c.details}</div>}
                     <div className="mt-1 text-[11px] text-gray-500">
                       {new Date(c.created_at).toLocaleString()}
                     </div>
@@ -498,9 +544,53 @@ export default function Home() {
               </div>
             )}
 
-            {!qaLoading && !qaErr && qaChecks.length === 0 && (
-              <div className="mt-2 text-sm text-gray-500">No QA records yet.</div>
-            )}
+            {/* QA Trend (14 days) */}
+            <div className="mt-6">
+              <h3 className="text-base font-semibold">QA Trend (last 14 days)</h3>
+              {trendLoading && <div className="mt-2 text-sm">Loading trend…</div>}
+              {trendErr && <div aria-live="polite" className="mt-2 text-sm text-red-600">Error: {trendErr}</div>}
+              {!trendLoading && trendRows.length > 0 && (
+                <div className="mt-2 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left border-b">
+                        <th className="py-2 pr-3">Day</th>
+                        <th className="py-2 pr-3">Pass</th>
+                        <th className="py-2 pr-3">Warn</th>
+                        <th className="py-2 pr-3">Fail</th>
+                        <th className="py-2 pr-3">Visual</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trendRows.map((r) => {
+                        const total = Math.max(r.total, 1);
+                        const passW = (r.pass / total) * 100;
+                        const warnW = (r.warn / total) * 100;
+                        const failW = (r.fail / total) * 100;
+                        return (
+                          <tr key={r.day} className="border-b last:border-0">
+                            <td className="py-2 pr-3">{r.day}</td>
+                            <td className="py-2 pr-3">{r.pass}</td>
+                            <td className="py-2 pr-3">{r.warn}</td>
+                            <td className="py-2 pr-3">{r.fail}</td>
+                            <td className="py-2 pr-3">
+                              <div className="w-full h-3 rounded overflow-hidden border">
+                                <div style={{ width: `${passW}%` }} className="h-3 inline-block bg-green-400" />
+                                <div style={{ width: `${warnW}%` }} className="h-3 inline-block bg-yellow-400" />
+                                <div style={{ width: `${failW}%` }} className="h-3 inline-block bg-red-400" />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {!trendLoading && trendRows.length === 0 && !trendErr && (
+                <div className="mt-2 text-sm text-gray-500">No QA runs in the last 14 days.</div>
+              )}
+            </div>
           </section>
         )}
 

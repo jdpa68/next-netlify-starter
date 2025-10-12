@@ -1,19 +1,14 @@
 // netlify/functions/chat.js
-// Step 10c-2: Supabase logging (CommonJS require) + Lancelot persona
+// Step 10c-3: Session recall — returns/accepts sessionId, logs messages, keeps persona
 
 const { createClient } = require("@supabase/supabase-js");
-
 const MODEL = "gpt-4o-mini";
 
-// helper for fetch with timeout
+// helper: fetch with timeout
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: ctrl.signal });
-  } finally {
-    clearTimeout(id);
-  }
+  try { return await fetch(url, { ...options, signal: ctrl.signal }); } finally { clearTimeout(id); }
 }
 
 exports.handler = async (event) => {
@@ -27,10 +22,7 @@ exports.handler = async (event) => {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!apiKey || !supabaseUrl || !supabaseServiceKey) {
-      return {
-        statusCode: 500,
-        body: JSON.stringify({ error: "Missing environment variables." })
-      };
+      return { statusCode: 500, body: JSON.stringify({ error: "Missing environment variables." }) };
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -38,12 +30,13 @@ exports.handler = async (event) => {
     const body = JSON.parse(event.body || "{}");
     const message = (body.message || "").trim();
     const ctx = body.ctx || {};
+    let sessionId = body.sessionId || null;
 
     if (!message) {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
     }
 
-    // --- Persona prompt (Jenn-style) ---
+    // persona
     const persona = `
 You are **Lancelot**, the higher-education consultant built by PeerQuest.
 Your mission: help campus leaders, faculty, and staff make better decisions about enrollment, retention, finance, and academic quality.
@@ -71,32 +64,12 @@ Compliance:
       ctx.inst_url ? `.edu: ${ctx.inst_url}` : null,
       ctx.unit_id ? `IPEDS ID: ${ctx.unit_id}` : null
     ].filter(Boolean);
-
     const sessionContext = contextLines.length
       ? `Session context → ${contextLines.join(" · ")}`
       : "Session context → General (no school set)";
 
-    // --- 1) Get or create session ---
-    let sessionId = null;
-    const { data: session, error: selErr } = await supabase
-      .from("chat_sessions")
-      .select("id")
-      .eq("user_name", ctx.firstName || null)
-      .eq("institution", ctx.institutionName || null)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (selErr) console.error("session select error:", selErr);
-
-    if (session) {
-      sessionId = session.id;
-      const { error: updErr } = await supabase
-        .from("chat_sessions")
-        .update({ last_active: new Date().toISOString() })
-        .eq("id", sessionId);
-      if (updErr) console.error("session update error:", updErr);
-    } else {
+    // 1) Ensure we have a session
+    if (!sessionId) {
       const { data: newSession, error: insErr } = await supabase
         .from("chat_sessions")
         .insert({
@@ -109,32 +82,39 @@ Compliance:
         .single();
       if (insErr) console.error("session insert error:", insErr);
       sessionId = newSession?.id || null;
+    } else {
+      // touch last_active
+      const { error: updErr } = await supabase
+        .from("chat_sessions")
+        .update({ last_active: new Date().toISOString() })
+        .eq("id", sessionId);
+      if (updErr) console.error("session update error:", updErr);
     }
 
-    // --- 2) Save user question ---
+    // 2) Save user's message
     if (sessionId) {
-      const { error: msgInsErr } = await supabase.from("chat_messages").insert({
+      const { error: msgErr } = await supabase.from("chat_messages").insert({
         session_id: sessionId,
         role: "user",
         content: message
       });
-      if (msgInsErr) console.error("user msg insert error:", msgInsErr);
+      if (msgErr) console.error("user msg insert error:", msgErr);
     }
 
-    // --- 3) Retrieve last few messages for memory ---
+    // 3) Load prior messages for recall (last 8 turns)
     let history = [];
     if (sessionId) {
-      const { data: previousMsgs, error: histErr } = await supabase
+      const { data: prior, error: histErr } = await supabase
         .from("chat_messages")
         .select("role, content")
         .eq("session_id", sessionId)
         .order("created_at", { ascending: true })
-        .limit(5);
+        .limit(16); // 8 user + 8 assistant
       if (histErr) console.error("history select error:", histErr);
-      history = (previousMsgs || []).map((m) => ({ role: m.role, content: m.content }));
+      history = (prior || []).map((m) => ({ role: m.role, content: m.content }));
     }
 
-    // --- 4) Call OpenAI ---
+    // 4) Call OpenAI
     let replyText = "";
     try {
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
@@ -169,7 +149,7 @@ Compliance:
       replyText = fallbackReply(ctx, message, "temporary model issue");
     }
 
-    // --- 5) Save assistant reply ---
+    // 5) Save assistant's reply
     if (sessionId) {
       const { error: asstErr } = await supabase.from("chat_messages").insert({
         session_id: sessionId,
@@ -179,26 +159,33 @@ Compliance:
       if (asstErr) console.error("assistant msg insert error:", asstErr);
     }
 
-    // --- 6) Return reply ---
-    return okReply(replyText, []);
+    // 6) Return both reply and sessionId (for reuse by client)
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        reply: replyText,
+        citations: [],
+        sessionId
+      })
+    };
   } catch (err) {
     console.error("chat handler error:", err);
-    return okReply(
-      "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
-      []
-    );
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        reply: "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
+        citations: [],
+        sessionId: null
+      })
+    };
   }
 };
 
-// ---------- helpers ----------
-function okReply(reply, citations) {
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ok: true, reply, citations })
-  };
-}
-
+// helpers
 function fallbackReply(ctx, message, reason) {
   const greet = ctx.firstName
     ? (ctx.institutionName ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.` : `Hi ${ctx.firstName}.`)

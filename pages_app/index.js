@@ -1,7 +1,7 @@
 // ===========================================
 // Lancelot (Public App)
-// Welcome & Context + Intent-Aware Retrieval
-// + Human-speed typewriter + Speed toggle + Chat connection
+// Welcome & Context + Session Recall + Branded UI
+// Human-speed typewriter + Speed toggle + Chat connection
 // ===========================================
 
 import { useEffect, useRef, useState } from "react";
@@ -37,27 +37,44 @@ const AREA_CHIPS = [
   ["Career Colleges", "area_career_colleges"]
 ];
 
-// ------------- helpers -------------
-const LS_KEY = "lancelot_ctx";
+// ---------- local storage helpers ----------
+const LS_CTX = "lancelot_ctx";
+const LS_SESSION = "lancelot_session";
+
 function loadCtx() {
   try {
-    const raw = typeof window !== "undefined" && window.localStorage.getItem(LS_KEY);
+    const raw = typeof window !== "undefined" && window.localStorage.getItem(LS_CTX);
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 function saveCtx(ctx) {
-  try { if (typeof window !== "undefined") window.localStorage.setItem(LS_KEY, JSON.stringify(ctx || {})); } catch {}
+  try { if (typeof window !== "undefined") window.localStorage.setItem(LS_CTX, JSON.stringify(ctx || {})); } catch {}
 }
 function clearCtx() {
-  try { if (typeof window !== "undefined") window.localStorage.removeItem(LS_KEY); } catch {}
+  try { if (typeof window !== "undefined") window.localStorage.removeItem(LS_CTX); } catch {}
+}
+function loadSessionId() {
+  try { return typeof window !== "undefined" && window.localStorage.getItem(LS_SESSION) || null; } catch { return null; }
+}
+function saveSessionId(id) {
+  try {
+    if (typeof window !== "undefined") {
+      if (id) window.localStorage.setItem(LS_SESSION, id);
+      else window.localStorage.removeItem(LS_SESSION);
+    }
+  } catch {}
 }
 
+// very small **bold** renderer
 function mdBold(line) { return line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); }
 
-// ------------- component -------------
 export default function AppHome() {
+  // Session context
   const [ctx, setCtx] = useState(null);
   const [showWelcome, setShowWelcome] = useState(true);
+  const [sessionId, setSessionId] = useState(null); // <-- session recall
+
+  // Welcome form
   const [firstName, setFirstName] = useState("");
   const [institutionName, setInstitutionName] = useState("");
   const [prefArea, setPrefArea] = useState("");
@@ -80,7 +97,7 @@ export default function AppHome() {
   const startTyping = (text) => {
     clearTypingTimers();
     setDisplayedAnswer("");
-    const words = text.split(/\s+/);
+    const words = (text || "").split(/\s+/);
     let idx = 0;
     prerollRef.current = setTimeout(() => {
       const intervalMs = speed === "fast" ? 18 : 35;
@@ -91,14 +108,7 @@ export default function AppHome() {
     }, 350);
   };
 
-  useEffect(() => {
-    const saved = loadCtx();
-    if (saved && (saved.firstName || saved.institutionName)) {
-      setCtx(saved);
-      setShowWelcome(false);
-    }
-  }, []);
-
+  // ---------- Welcome & lookup (optional Netlify function) ----------
   const lookupInstitution = async (name) => {
     try {
       const url = new URL("/.netlify/functions/ipeds-lookup", window.location.origin);
@@ -112,6 +122,17 @@ export default function AppHome() {
       return { unit_id: null, inst_url: null, name };
     }
   };
+
+  // Load previous context + sessionId on mount
+  useEffect(() => {
+    const saved = loadCtx();
+    const savedSession = loadSessionId();
+    if (saved && (saved.firstName || saved.institutionName)) {
+      setCtx(saved);
+      setShowWelcome(false);
+    }
+    if (savedSession) setSessionId(savedSession);
+  }, []);
 
   const onContinue = async () => {
     setWelcomeBusy(true);
@@ -128,21 +149,38 @@ export default function AppHome() {
       saveCtx(newCtx);
       setCtx(newCtx);
       setShowWelcome(false);
+      // start a fresh session
+      saveSessionId(null);
+      setSessionId(null);
     } catch (e) {
       setWelcomeMsg("Couldn’t look up the school, continuing anyway.");
       const newCtx = { firstName: firstName.trim(), institutionName, unit_id: null, inst_url: null, pref_area: prefArea };
       saveCtx(newCtx);
       setCtx(newCtx);
       setShowWelcome(false);
+      saveSessionId(null);
+      setSessionId(null);
     } finally { setWelcomeBusy(false); }
   };
+
   const onSkip = () => {
     const newCtx = { firstName: firstName.trim(), institutionName: "", unit_id: null, inst_url: null, pref_area: prefArea };
     saveCtx(newCtx); setCtx(newCtx); setShowWelcome(false);
+    saveSessionId(null);
+    setSessionId(null);
   };
-  const onChangeSchool = () => { clearCtx(); setFirstName(ctx?.firstName || ""); setShowWelcome(true); };
 
-  // ------------------- ASK -------------------
+  const onChangeSchool = () => {
+    clearCtx();
+    setFirstName(ctx?.firstName || "");
+    setInstitutionName("");
+    setPrefArea("");
+    setShowWelcome(true);
+    saveSessionId(null);
+    setSessionId(null);
+  };
+
+  // -------------- ASK --------------
   const ask = async (e) => {
     e?.preventDefault?.();
     const term = (q || "").trim();
@@ -157,10 +195,20 @@ export default function AppHome() {
       const res = await fetch("/.netlify/functions/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: term, ctx })
+        body: JSON.stringify({
+          message: term,
+          ctx,
+          sessionId // <-- send existing sessionId (if any)
+        })
       });
       if (!res.ok) throw new Error("Chat function failed");
       const data = await res.json();
+
+      // Save/Update sessionId from server
+      if (data?.sessionId) {
+        setSessionId(data.sessionId);
+        saveSessionId(data.sessionId);
+      }
 
       const full = data.reply || "No response received.";
       setAnswer(full);
@@ -172,6 +220,14 @@ export default function AppHome() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const newConversation = () => {
+    saveSessionId(null);
+    setSessionId(null);
+    setAnswer("");
+    setDisplayedAnswer("");
+    setQ("");
   };
 
   // ------------------- UI -------------------
@@ -265,6 +321,8 @@ export default function AppHome() {
               {ctx?.institutionName && <button onClick={onChangeSchool} className="ml-2 underline">Change school</button>}
             </div>
           </div>
+
+          {/* Ask form + New conversation */}
           <form onSubmit={ask} className="px-5 mt-4 flex items-center gap-3 flex-wrap pb-4">
             <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask Lancelot… e.g., ‘How can we reduce summer melt?’"
                    className="flex-1 min-w-[240px] rounded-xl border px-3 py-2"
@@ -273,6 +331,11 @@ export default function AppHome() {
                     className="rounded-xl px-4 py-2 disabled:opacity-50"
                     style={{ backgroundColor: BRAND.accent, color: BRAND.primary, border: "1px solid rgba(4,13,44,0.08)" }}>
               {loading ? "Thinking…" : "Ask"}
+            </button>
+            <button type="button" onClick={newConversation}
+                    className="rounded-xl px-3 py-2 bg-white text-sm"
+                    style={{ border: "1px solid rgba(4,13,44,0.20)", color: "#111" }}>
+              New conversation
             </button>
           </form>
 

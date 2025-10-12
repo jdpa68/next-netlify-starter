@@ -52,3 +52,13 @@ main section {
   padding: 1.25rem 1.5rem;
   border-radius: 1rem;
 }
+
+/* 9.4d-3 — Text alignment & footer margin */
+h1, h2, h3, p {
+  margin-bottom: 0.75rem;
+}
+
+footer, .footer-note {
+  margin-top: 1.5rem;
+  text-align: center;
+}

@@ -1,10 +1,9 @@
 // ===========================================
-// Lancelot (Public App) — Branded UI (9.4b)
-// Palette: Deep Cove (#040D2C), Indian Khaki (#C2AA80), White
-// Tagline: “The trusted assistant for every higher-ed professional.”
+// Lancelot (Public App) — Branded UI + Intent-Aware Retrieval
+// + Human-speed typewriter answer + Speed toggle
 // ===========================================
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -12,7 +11,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-// Brand tokens (simple constants for now)
+// Brand tokens
 const BRAND = {
   primary: "#040D2C",     // Deep Cove
   accent:  "#C2AA80",     // Indian Khaki
@@ -21,19 +20,19 @@ const BRAND = {
   tagline: "The trusted assistant for every higher-ed professional."
 };
 
-// ---------- tiny helpers ----------
+// ---------- helpers ----------
 function trim(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
-function topCount(list) {
-  const map = new Map(); for (const v of list || []) { if (!v) continue; map.set(v, (map.get(v)||0)+1); }
-  let best=null, bestN=0; for (const [k,n] of map) { if (n>bestN){best=k;bestN=n;} } return best;
-}
-function mdBold(line) { return line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); }
+function topCount(list) { const m=new Map(); for(const v of list||[]){ if(!v) continue; m.set(v,(m.get(v)||0)+1);} let best=null,bn=0; for(const [k,n] of m){ if(n>bn){best=k;bn=n;} } return best; }
 function tokenize(s){return Array.from(new Set((s||"").toLowerCase().split(/\W+/).filter(t=>t.length>=3)));}
 
-// --- intent rules (fast) ---
+// very small **bold** renderer
+function mdBold(line){ return line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); }
+
+// --- intent rules ---
 function inferIntent(q){
   const s=(q||"").toLowerCase(), has=(...w)=>w.some(x=>s.includes(x));
   const wantsOPM = has("opm","online program manager","wiley","noodle","academic partnerships","2u");
+
   let issue=null;
   if (has("retention","persist","student success","advisor","advising","orientation","intervention","early alert")) issue="issue_student_success";
   else if (has("accreditation","rsi","standard","title iv","compliance","audit")) issue="issue_compliance";
@@ -49,6 +48,7 @@ function inferIntent(q){
   else if (issue==="issue_declining_enrollment") areaPref=["area_enrollment","area_marketing"];
   return { issue, areaPref, wantsOPM };
 }
+
 function scoreRow(row,tokens,intent){
   let score=0, text=((row.title||"")+" "+(row.summary||"")).toLowerCase();
   for(const t of tokens){ if(text.includes(t)) score+=3; }
@@ -64,20 +64,51 @@ function scoreRow(row,tokens,intent){
 export default function AppHome(){
   const [q,setQ]=useState("");
   const [loading,setLoading]=useState(false);
-  const [answer,setAnswer]=useState("");
+  const [answer,setAnswer]=useState("");        // full answer (kept for future)
   const [sources,setSources]=useState([]);
   const [error,setError]=useState("");
   const [showCites,setShowCites]=useState(false);
+
+  // Typewriter state
+  const [displayedAnswer, setDisplayedAnswer] = useState("");
+  const [speed, setSpeed] = useState("normal"); // "normal" | "fast"
+  const prerollRef = useRef(null);
+  const timerRef = useRef(null);
+
+  const clearTypingTimers = () => {
+    if (prerollRef.current) { clearTimeout(prerollRef.current); prerollRef.current = null; }
+    if (timerRef.current)   { clearInterval(timerRef.current);  timerRef.current = null; }
+  };
+
+  const startTyping = (fullText) => {
+    clearTypingTimers();
+    setDisplayedAnswer("");
+    const words = fullText.split(/\s+/);
+    let idx = 0;
+
+    // pre-roll pause so "Thinking…" registers
+    prerollRef.current = setTimeout(() => {
+      const intervalMs = speed === "fast" ? 18 : 35; // ~human reading speed
+      timerRef.current = setInterval(() => {
+        if (idx >= words.length) {
+          clearTypingTimers();
+          return;
+        }
+        setDisplayedAnswer(prev => prev + (prev ? " " : "") + words[idx++]);
+      }, intervalMs);
+    }, 350);
+  };
 
   const ask = async(e)=>{
     e?.preventDefault?.();
     const term=(q||"").trim(); if(!term) return;
     setLoading(true); setError(""); setAnswer(""); setSources([]); setShowCites(false);
+    clearTypingTimers(); setDisplayedAnswer("");
 
     try{
       const intent=inferIntent(term), tokens=tokenize(term);
 
-      // Pass 1: intent-first filter
+      // Pass 1: intent-first
       let query = supabase
         .from("knowledge_base")
         .select("id,title,summary,source_url,area_primary,area_secondary,issue_primary,issue_secondary,is_dissertation")
@@ -88,13 +119,14 @@ export default function AppHome(){
 
       let {data, error:e1}=await query; if(e1) throw e1;
 
-      // Pass 2: relax if empty
+      // Pass 2: relax + tokens
       if (!data || data.length===0){
         let relaxed = supabase
           .from("knowledge_base")
           .select("id,title,summary,source_url,area_primary,area_secondary,issue_primary,issue_secondary,is_dissertation")
           .order("id",{ascending:false}).limit(50);
         if (intent.issue) relaxed=relaxed.or(`issue_primary.eq.${intent.issue},issue_secondary.eq.${intent.issue}`);
+        const tokens = tokenize(term);
         if (tokens.length){
           const orClause = tokens.map(t=>`title.ilike.%${t}%,summary.ilike.%${t}%`).join(",");
           relaxed = relaxed.or(orClause);
@@ -103,10 +135,11 @@ export default function AppHome(){
         data=d2||[];
       }
 
-      // Score & sort
-      const ranked=(data||[]).map(r=>({r,s:scoreRow(r,tokens,intent)})).sort((a,b)=>b.s-a.s).map(x=>x.r);
+      // Score/sort
+      const tokens2 = tokenize(term);
+      const ranked=(data||[]).map(r=>({r,s:scoreRow(r,tokens2,intent)})).sort((a,b)=>b.s-a.s).map(x=>x.r);
 
-      // Fallback recent
+      // Fallback: recent
       let results=ranked, note="";
       if (!results || results.length===0){
         const {data:d3,error:e3}=await supabase
@@ -128,23 +161,28 @@ export default function AppHome(){
 
       const bullets=results.slice(0,5).map(d=>`• **${d.title}** — ${trim(d.summary,220)}`);
       const closing="Open the citations to review the top sources I used.";
-      setAnswer([opening,"",...bullets, bullets.length?"":"", closing].join("\n"));
+
+      const full = [opening,"",...bullets, bullets.length?"":"", closing].join("\n");
+      setAnswer(full);
       setSources(results.map(d=>({
         title:d.title, url:d.source_url||"",
         flags:[ d.is_dissertation?"dissertation":null, d.area_primary||null, d.issue_primary||null ].filter(Boolean)
       })));
       setShowCites(true);
+
+      // start typewriter
+      startTyping(full);
+
     }catch(e2){ setError(e2.message||"Something went wrong."); }
     finally{ setLoading(false); }
   };
 
   return (
     <div className="min-h-screen" style={{backgroundColor: BRAND.primary, color: BRAND.white}}>
-      {/* Branded Header */}
+      {/* Header */}
       <header className="w-full border-b border-white/15">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {/* Simple text mark for now; swap for logo later */}
             <div className="text-xl md:text-2xl font-semibold tracking-wide">{BRAND.title}</div>
             <span className="hidden md:inline text-xs opacity-80">{BRAND.tagline}</span>
           </div>
@@ -155,7 +193,7 @@ export default function AppHome(){
       {/* Main Card */}
       <main className="max-w-3xl mx-auto p-6 md:p-10">
         <section className="rounded-2xl shadow-sm" style={{backgroundColor: BRAND.white, color:"#111", border: "1px solid rgba(4,13,44,0.10)"}}>
-          {/* App intro */}
+          {/* Intro */}
           <div className="px-5 pt-5">
             <h1 className="text-lg md:text-xl font-semibold" style={{color: BRAND.primary}}>
               Your Higher-Ed Partner
@@ -191,25 +229,39 @@ export default function AppHome(){
             </div>
           )}
 
-          {/* Answer + citations */}
-          {(answer || loading) && (
+          {/* Answer + speed toggle + citations */}
+          {(displayedAnswer || loading) && (
             <div className="px-5 pb-6 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-base md:text-lg font-semibold" style={{color: BRAND.primary}}>Answer</h2>
-                <button
-                  onClick={()=>setShowCites(v=>!v)}
-                  className="rounded-xl px-3 py-2 text-sm"
-                  style={{backgroundColor:"#fff", border:"1px solid rgba(4,13,44,0.15)", color: BRAND.primary}}
-                >
-                  {showCites ? "Hide citations" : "Show citations"}
-                </button>
+
+                {/* Speed toggle */}
+                <div className="flex items-center gap-2 text-xs text-gray-600">
+                  <span>Speed:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSpeed("normal")}
+                    className={`rounded border px-2 py-0.5 ${speed==="normal" ? "bg-gray-100" : "bg-white"}`}
+                    aria-pressed={speed==="normal"}
+                  >
+                    Normal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSpeed("fast")}
+                    className={`rounded border px-2 py-0.5 ${speed==="fast" ? "bg-gray-100" : "bg-white"}`}
+                    aria-pressed={speed==="fast"}
+                  >
+                    Fast
+                  </button>
+                </div>
               </div>
 
               {loading && <div className="text-sm text-gray-600">Searching the KB…</div>}
 
-              {!loading && answer && (
+              {!loading && (
                 <div className="prose prose-sm max-w-none">
-                  {answer.split("\n").map((line,i)=>
+                  {(displayedAnswer || "").split("\n").map((line,i)=>
                     line.trim()==="" ? <div key={i} className="h-2"/> :
                     line.startsWith("• ") ? <p key={i}>{line}</p> :
                     line.includes("**")

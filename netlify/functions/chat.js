@@ -1,7 +1,7 @@
 // netlify/functions/chat.js
 // Debug version: show OpenAI error details in the reply (temporary).
 
-const MODEL = "gpt-3.5-turbo"; // safe default for broad access
+const MODEL = "gpt-4o-mini"; // safe default for broad access
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();

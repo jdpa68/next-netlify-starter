@@ -1,9 +1,13 @@
 // ===========================================
-// Lancelot (Public App) — Branded UI + Intent-Aware Retrieval
-// + Human-speed typewriter answer + Speed toggle
+// Lancelot (Public App) — Welcome & Context + Branded UI
+// Intent-aware retrieval + Human-speed typewriter answer + Speed toggle
+// • Welcome screen asks First name + Institution
+// • Auto-attempt .edu + IPEDS via optional Netlify function (/ipeds-lookup)
+// • Stores {firstName, institutionName, inst_url, unit_id, pref_area} in localStorage
+// • Graceful fallback if lookup not available yet
 // ===========================================
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -19,6 +23,22 @@ const BRAND = {
   title:   "Lancelot",
   tagline: "The trusted assistant for every higher-ed professional."
 };
+
+// Areas (chips on welcome screen)
+const AREA_CHIPS = [
+  ["Enrollment", "area_enrollment"],
+  ["Marketing", "area_marketing"],
+  ["Finance", "area_finance"],
+  ["Financial Aid", "area_financial_aid"],
+  ["Leadership", "area_leadership"],
+  ["Advising/Registrar", "area_advising_registrar"],
+  ["IT/Systems", "area_it"],
+  ["Curriculum/Instruction", "area_curriculum_instruction"],
+  ["Regional Accreditation", "area_regional_accreditation"],
+  ["National Accreditation", "area_national_accreditation"],
+  ["OPMs", "area_opm"],
+  ["Career Colleges", "area_career_colleges"]
+];
 
 // ---------- helpers ----------
 function trim(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
@@ -61,10 +81,65 @@ function scoreRow(row,tokens,intent){
   return score;
 }
 
+// ---------- local storage helpers ----------
+const LS_KEY = "lancelot_ctx";
+function loadCtx() {
+  try {
+    const raw = typeof window !== "undefined" && window.localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveCtx(ctx) {
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(LS_KEY, JSON.stringify(ctx || {}));
+  } catch {}
+}
+function clearCtx() {
+  try {
+    if (typeof window !== "undefined") window.localStorage.removeItem(LS_KEY);
+  } catch {}
+}
+
+// ---------- Welcome & lookup (optional Netlify function) ----------
+async function lookupInstitution(name) {
+  // If you later add a Netlify function, it can sit here:
+  // /.netlify/functions/ipeds-lookup?name=...
+  // Expected return: { unit_id?: string, inst_url?: string, name?: string }
+  try {
+    const url = new URL("/.netlify/functions/ipeds-lookup", window.location.origin);
+    url.searchParams.set("name", name);
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error("lookup failed");
+    const data = await res.json();
+    // sanitize
+    const inst_url = (data.inst_url || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    return {
+      unit_id: data.unit_id || null,
+      inst_url: inst_url || null,
+      name: data.name || name
+    };
+  } catch {
+    // Graceful fallback: no function yet, or not found
+    return { unit_id: null, inst_url: null, name };
+  }
+}
+
 export default function AppHome(){
+  // --------------- Session context ---------------
+  const [ctx, setCtx] = useState(null);
+  const [showWelcome, setShowWelcome] = useState(true);
+
+  // welcome form
+  const [firstName, setFirstName] = useState("");
+  const [institutionName, setInstitutionName] = useState("");
+  const [prefArea, setPrefArea] = useState("");
+  const [welcomeBusy, setWelcomeBusy] = useState(false);
+  const [welcomeMsg, setWelcomeMsg] = useState("");
+
+  // --------------- Ask flow ---------------
   const [q,setQ]=useState("");
   const [loading,setLoading]=useState(false);
-  const [answer,setAnswer]=useState("");        // full answer (kept for future)
+  const [answer,setAnswer]=useState("");        // full answer kept for future
   const [sources,setSources]=useState([]);
   const [error,setError]=useState("");
   const [showCites,setShowCites]=useState(false);
@@ -99,6 +174,75 @@ export default function AppHome(){
     }, 350);
   };
 
+  // Load existing context
+  useEffect(() => {
+    const saved = loadCtx();
+    if (saved && (saved.firstName || saved.institutionName || saved.pref_area)) {
+      setCtx(saved);
+      setShowWelcome(false);
+    }
+  }, []);
+
+  const onContinue = async () => {
+    setWelcomeBusy(true);
+    setWelcomeMsg("");
+    try {
+      let unit_id = null, inst_url = null, resolvedName = institutionName.trim();
+      if (resolvedName) {
+        const res = await lookupInstitution(resolvedName);
+        unit_id = res.unit_id;
+        inst_url = res.inst_url;
+        resolvedName = res.name || resolvedName;
+      }
+      const newCtx = {
+        firstName: firstName.trim() || "",
+        institutionName: resolvedName || "",
+        unit_id: unit_id || null,
+        inst_url: inst_url || null,
+        pref_area: prefArea || ""
+      };
+      saveCtx(newCtx);
+      setCtx(newCtx);
+      setShowWelcome(false);
+    } catch (e) {
+      setWelcomeMsg("I couldn’t resolve the school right now. I’ll proceed without it.");
+      const newCtx = {
+        firstName: firstName.trim() || "",
+        institutionName: institutionName.trim() || "",
+        unit_id: null,
+        inst_url: null,
+        pref_area: prefArea || ""
+      };
+      saveCtx(newCtx);
+      setCtx(newCtx);
+      setShowWelcome(false);
+    } finally {
+      setWelcomeBusy(false);
+    }
+  };
+
+  const onSkip = () => {
+    const newCtx = {
+      firstName: firstName.trim() || "",
+      institutionName: "",
+      unit_id: null,
+      inst_url: null,
+      pref_area: prefArea || ""
+    };
+    saveCtx(newCtx);
+    setCtx(newCtx);
+    setShowWelcome(false);
+  };
+
+  const onChangeSchool = () => {
+    clearCtx();
+    setFirstName(ctx?.firstName || "");
+    setInstitutionName("");
+    setPrefArea("");
+    setShowWelcome(true);
+  };
+
+  // --------------- Ask logic (intent-aware) ---------------
   const ask = async(e)=>{
     e?.preventDefault?.();
     const term=(q||"").trim(); if(!term) return;
@@ -114,8 +258,13 @@ export default function AppHome(){
         .select("id,title,summary,source_url,area_primary,area_secondary,issue_primary,issue_secondary,is_dissertation")
         .order("id",{ascending:false}).limit(50);
 
-      if (intent.issue) query=query.eq("issue_primary", intent.issue);
-      if (intent.areaPref?.length>0) query=query.in("area_primary", intent.areaPref);
+      // If user chose a preferred area on welcome, bias first filter
+      if (ctx?.pref_area) {
+        query = query.eq("area_primary", ctx.pref_area);
+      } else {
+        if (intent.issue) query=query.eq("issue_primary", intent.issue);
+        if (intent.areaPref?.length>0) query=query.in("area_primary", intent.areaPref);
+      }
 
       let {data, error:e1}=await query; if(e1) throw e1;
 
@@ -126,9 +275,9 @@ export default function AppHome(){
           .select("id,title,summary,source_url,area_primary,area_secondary,issue_primary,issue_secondary,is_dissertation")
           .order("id",{ascending:false}).limit(50);
         if (intent.issue) relaxed=relaxed.or(`issue_primary.eq.${intent.issue},issue_secondary.eq.${intent.issue}`);
-        const tokens = tokenize(term);
-        if (tokens.length){
-          const orClause = tokens.map(t=>`title.ilike.%${t}%,summary.ilike.%${t}%`).join(",");
+        const tokens2 = tokenize(term);
+        if (tokens2.length){
+          const orClause = tokens2.map(t=>`title.ilike.%${t}%,summary.ilike.%${t}%`).join(",");
           relaxed = relaxed.or(orClause);
         }
         const {data:d2,error:e2}=await relaxed; if(e2) throw e2;
@@ -136,8 +285,8 @@ export default function AppHome(){
       }
 
       // Score/sort
-      const tokens2 = tokenize(term);
-      const ranked=(data||[]).map(r=>({r,s:scoreRow(r,tokens2,intent)})).sort((a,b)=>b.s-a.s).map(x=>x.r);
+      const tokens3 = tokenize(term);
+      const ranked=(data||[]).map(r=>({r,s:scoreRow(r,tokens3,intent)})).sort((a,b)=>b.s-a.s).map(x=>x.r);
 
       // Fallback: recent
       let results=ranked, note="";
@@ -153,7 +302,14 @@ export default function AppHome(){
       const aPrimary=topCount(results.map(d=>d.area_primary));
       const iPrimary=topCount(results.map(d=>d.issue_primary));
 
+      const greeting = ctx?.firstName
+        ? (ctx?.institutionName
+            ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.`
+            : `Hi ${ctx.firstName}.`)
+        : "";
+
       const opening=[
+        greeting,
         note || "Here’s a concise answer grounded in your Knowledge Base.",
         aPrimary?`Most relevant area: **${aPrimary}**.`:"",
         iPrimary?`Key issue in play: **${iPrimary}**.`:""
@@ -169,14 +325,105 @@ export default function AppHome(){
         flags:[ d.is_dissertation?"dissertation":null, d.area_primary||null, d.issue_primary||null ].filter(Boolean)
       })));
       setShowCites(true);
-
-      // start typewriter
       startTyping(full);
 
     }catch(e2){ setError(e2.message||"Something went wrong."); }
     finally{ setLoading(false); }
   };
 
+  // ---------------- UI ----------------
+  if (showWelcome) {
+    return (
+      <div className="min-h-screen" style={{backgroundColor: BRAND.primary, color: BRAND.white}}>
+        <header className="w-full border-b border-white/15">
+          <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="text-xl md:text-2xl font-semibold tracking-wide">{BRAND.title}</div>
+              <span className="hidden md:inline text-xs opacity-80">{BRAND.tagline}</span>
+            </div>
+            <span className="text-xs opacity-80">Beta</span>
+          </div>
+        </header>
+
+        <main className="max-w-3xl mx-auto p-6 md:p-10">
+          <section className="rounded-2xl shadow-sm" style={{backgroundColor: BRAND.white, color:"#111", border: "1px solid rgba(4,13,44,0.10)"}}>
+            <div className="px-5 pt-5">
+              <h1 className="text-lg md:text-xl font-semibold" style={{color: BRAND.primary}}>Hi, I’m Lancelot.</h1>
+              <p className="text-sm text-gray-600 mt-1">Your higher-ed partner. I can personalize replies if you share your name and college.</p>
+            </div>
+
+            <div className="px-5 mt-4 grid grid-cols-1 gap-3 pb-2">
+              <input
+                type="text"
+                value={firstName}
+                onChange={(e)=>setFirstName(e.target.value)}
+                placeholder="First name (e.g., Alex)"
+                className="rounded-xl border px-3 py-2"
+                style={{borderColor:"rgba(4,13,44,0.20)"}}
+              />
+              <input
+                type="text"
+                value={institutionName}
+                onChange={(e)=>setInstitutionName(e.target.value)}
+                placeholder="College or university (optional)"
+                className="rounded-xl border px-3 py-2"
+                style={{borderColor:"rgba(4,13,44,0.20)"}}
+              />
+              <p className="text-xs text-gray-500">Type your college; I’ll try to match its official .edu and IPEDS ID.</p>
+            </div>
+
+            {/* Area chips */}
+            <div className="px-5 pb-3">
+              <div className="text-xs text-gray-600 mb-2">Or explore topics:</div>
+              <div className="flex flex-wrap gap-2">
+                {AREA_CHIPS.map(([label, val]) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={()=>setPrefArea(val)}
+                    className={`text-xs rounded-2xl border px-3 py-1 ${prefArea===val ? "bg-gray-100" : "bg-white"}`}
+                    style={{borderColor:"rgba(4,13,44,0.20)", color:"#111"}}
+                    aria-pressed={prefArea===val}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="px-5 pb-5 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={onContinue}
+                disabled={welcomeBusy}
+                className="rounded-xl px-4 py-2 disabled:opacity-50"
+                style={{backgroundColor: BRAND.accent, color: BRAND.primary, border: "1px solid rgba(4,13,44,0.08)"}}
+              >
+                {welcomeBusy ? "Preparing…" : "Continue"}
+              </button>
+              <button
+                type="button"
+                onClick={onSkip}
+                disabled={welcomeBusy}
+                className="rounded-xl px-3 py-2 bg-white disabled:opacity-50 text-sm"
+                style={{border:"1px solid rgba(4,13,44,0.20)", color:"#111"}}
+              >
+                Skip
+              </button>
+              {welcomeMsg && <span className="text-xs text-red-600">{welcomeMsg}</span>}
+            </div>
+          </section>
+
+          <div className="text-[11px] mt-4" style={{color: BRAND.white, opacity: 0.75}}>
+            We store your name and school locally to personalize this session. You can change school later.
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ----- Ask screen -----
   return (
     <div className="min-h-screen" style={{backgroundColor: BRAND.primary, color: BRAND.white}}>
       {/* Header */}
@@ -196,11 +443,19 @@ export default function AppHome(){
           {/* Intro */}
           <div className="px-5 pt-5">
             <h1 className="text-lg md:text-xl font-semibold" style={{color: BRAND.primary}}>
-              Your Higher-Ed Partner
+              {ctx?.firstName
+                ? (ctx?.institutionName
+                    ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.`
+                    : `Hi ${ctx.firstName}.`)
+                : "Your Higher-Ed Partner"}
             </h1>
             <p className="text-sm text-gray-600 mt-1">
               Ask about enrollment, retention, accreditation, finance, or marketing. I’ll answer with citations.
             </p>
+            <div className="mt-1 text-xs text-gray-500">
+              {ctx?.inst_url ? `Detected: ${ctx.inst_url}` : ctx?.institutionName ? "No .edu detected yet" : ""}
+              {ctx?.institutionName && <button onClick={onChangeSchool} className="ml-2 underline">Change school</button>}
+            </div>
           </div>
 
           {/* Ask form */}

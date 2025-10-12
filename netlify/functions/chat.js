@@ -1,5 +1,6 @@
 // netlify/functions/chat.js
-// Step 10c-3: Session recall — returns/accepts sessionId, logs messages, keeps persona
+// Step 10d: Context Recall — adds ephemeral thread summary when history grows
+// CommonJS + Supabase logging + Jenn-style persona + safe fallbacks
 
 const { createClient } = require("@supabase/supabase-js");
 const MODEL = "gpt-4o-mini";
@@ -8,7 +9,20 @@ const MODEL = "gpt-4o-mini";
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
-  try { return await fetch(url, { ...options, signal: ctrl.signal }); } finally { clearTimeout(id); }
+  try { return await fetch(url, { ...options, signal: ctrl.signal }); }
+  finally { clearTimeout(id); }
+}
+
+// quick, lightweight intent guess (helps with focus)
+function inferFocus(text = "") {
+  const s = text.toLowerCase();
+  const has = (...w) => w.some(x => s.includes(x));
+  if (has("retention", "persist", "student success", "advis")) return "issue_student_success";
+  if (has("accreditation", "rsi", "title iv", "compliance", "audit")) return "issue_compliance";
+  if (has("pricing", "net tuition", "discount", "budget", "aid", "fafsa", "pell")) return "issue_cost_pricing";
+  if (has("declin", "yield", "melt", "pipeline", "recruit", "inquiry", "enrollment")) return "issue_declining_enrollment";
+  if (has("quality", "learning outcomes", "curriculum", "instruction", "qm", "udl")) return "issue_academic_quality";
+  return "general";
 }
 
 exports.handler = async (event) => {
@@ -36,7 +50,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
     }
 
-    // persona
+    // --- Persona (Jenn-style) ---
     const persona = `
 You are **Lancelot**, the higher-education consultant built by PeerQuest.
 Your mission: help campus leaders, faculty, and staff make better decisions about enrollment, retention, finance, and academic quality.
@@ -58,12 +72,14 @@ Compliance:
 • Flag uncertainty honestly and suggest where to verify.
 `;
 
+    // Session context line
     const contextLines = [
       ctx.firstName ? `User: ${ctx.firstName}` : null,
       ctx.institutionName ? `Institution: ${ctx.institutionName}` : null,
       ctx.inst_url ? `.edu: ${ctx.inst_url}` : null,
       ctx.unit_id ? `IPEDS ID: ${ctx.unit_id}` : null
     ].filter(Boolean);
+
     const sessionContext = contextLines.length
       ? `Session context → ${contextLines.join(" · ")}`
       : "Session context → General (no school set)";
@@ -83,7 +99,6 @@ Compliance:
       if (insErr) console.error("session insert error:", insErr);
       sessionId = newSession?.id || null;
     } else {
-      // touch last_active
       const { error: updErr } = await supabase
         .from("chat_sessions")
         .update({ last_active: new Date().toISOString() })
@@ -101,18 +116,39 @@ Compliance:
       if (msgErr) console.error("user msg insert error:", msgErr);
     }
 
-    // 3) Load prior messages for recall (last 8 turns)
+    // 3) Load prior messages for recall (up to 24 items)
     let history = [];
+    let totalCount = 0;
     if (sessionId) {
       const { data: prior, error: histErr } = await supabase
         .from("chat_messages")
         .select("role, content")
         .eq("session_id", sessionId)
-        .order("created_at", { ascending: true })
-        .limit(16); // 8 user + 8 assistant
+        .order("created_at", { ascending: true });
       if (histErr) console.error("history select error:", histErr);
-      history = (prior || []).map((m) => ({ role: m.role, content: m.content }));
+
+      const items = prior || [];
+      totalCount = items.length;
+
+      // Keep last ~10 messages for direct context
+      const tail = items.slice(-10).map(m => ({ role: m.role, content: m.content }));
+      history = tail;
+
+      // If thread is long, create a short summary of earlier turns
+      if (items.length > 12) {
+        const earlier = items.slice(0, -10).map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
+        const summary = await summarizeThread(apiKey, earlier).catch(() => null);
+        if (summary) {
+          history = [
+            { role: "system", content: `Thread summary:\n${summary}` },
+            ...history
+          ];
+        }
+      }
     }
+
+    // lightweight focus (for future tuning; no UI change)
+    const focusTag = ctx.pref_area || inferFocus(`${message}`);
 
     // 4) Call OpenAI
     let replyText = "";
@@ -128,6 +164,8 @@ Compliance:
           messages: [
             { role: "system", content: persona.trim() },
             { role: "system", content: sessionContext },
+            // focus hint
+            { role: "system", content: `Focus hint: ${focusTag}` },
             ...history,
             { role: "user", content: message }
           ],
@@ -149,7 +187,7 @@ Compliance:
       replyText = fallbackReply(ctx, message, "temporary model issue");
     }
 
-    // 5) Save assistant's reply
+    // 5) Save assistant reply
     if (sessionId) {
       const { error: asstErr } = await supabase.from("chat_messages").insert({
         session_id: sessionId,
@@ -159,7 +197,7 @@ Compliance:
       if (asstErr) console.error("assistant msg insert error:", asstErr);
     }
 
-    // 6) Return both reply and sessionId (for reuse by client)
+    // 6) Return reply + sessionId
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
@@ -167,7 +205,8 @@ Compliance:
         ok: true,
         reply: replyText,
         citations: [],
-        sessionId
+        sessionId,
+        meta: { totalMessages: totalCount, focusTag }
       })
     };
   } catch (err) {
@@ -185,7 +224,31 @@ Compliance:
   }
 };
 
-// helpers
+// --- helpers ---
+
+async function summarizeThread(apiKey, text) {
+  const prompt = `
+Summarize the earlier parts of this higher-ed conversation into a crisp, <120-word briefing a consultant would use.
+Focus on the user's goals, constraints, and any chosen direction. No fluff. Plain sentences.
+
+Conversation:
+${text}
+`;
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 220
+    })
+  });
+  if (!res.ok) throw new Error(`Summarizer ${res.status}`);
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content?.trim() || null;
+}
+
 function fallbackReply(ctx, message, reason) {
   const greet = ctx.firstName
     ? (ctx.institutionName ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.` : `Hi ${ctx.firstName}.`)

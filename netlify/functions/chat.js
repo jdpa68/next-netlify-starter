@@ -1,9 +1,10 @@
 // netlify/functions/chat.js
-// Step 10b-4: Working AI "brain" with upgraded Lancelot persona prompt
+// Step 10c-2: Adds Supabase logging for session + message memory
 
-const MODEL = "gpt-4o-mini"; // higher reasoning + tone control
+const MODEL = "gpt-4o-mini";
+const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
 
-// helper for fetch with timeout
+// Helper: fetch with timeout
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -21,15 +22,27 @@ exports.handler = async (event) => {
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!apiKey || !supabaseUrl || !supabaseServiceKey) {
+      return {
+        statusCode: 500,
+        body: JSON.stringify({ error: "Missing environment variables." })
+      };
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
     const body = JSON.parse(event.body || "{}");
     const message = (body.message || "").trim();
     const ctx = body.ctx || {};
 
     if (!message) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing 'message'" }) };
+      return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
     }
 
-    // --- Updated persona ---
+    // -------- Persona Prompt --------
     const persona = `
 You are **Lancelot**, the higher-education consultant built by PeerQuest.
 Your mission: help campus leaders, faculty, and staff make better decisions about enrollment, retention, finance, and academic quality.
@@ -62,6 +75,58 @@ Compliance:
       ? `Session context → ${contextLines.join(" · ")}`
       : "Session context → General (no school set)";
 
+    // --- 1️⃣ Get or create session ---
+    let sessionId = null;
+    const { data: session } = await supabase
+      .from("chat_sessions")
+      .select("id")
+      .eq("user_name", ctx.firstName || null)
+      .eq("institution", ctx.institutionName || null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (session) {
+      sessionId = session.id;
+      await supabase.from("chat_sessions")
+        .update({ last_active: new Date().toISOString() })
+        .eq("id", sessionId);
+    } else {
+      const { data: newSession } = await supabase
+        .from("chat_sessions")
+        .insert({
+          user_name: ctx.firstName || null,
+          institution: ctx.institutionName || null,
+          inst_url: ctx.inst_url || null,
+          unit_id: ctx.unit_id || null
+        })
+        .select()
+        .single();
+      sessionId = newSession?.id;
+    }
+
+    // --- 2️⃣ Save user question ---
+    await supabase.from("chat_messages").insert({
+      session_id: sessionId,
+      role: "user",
+      content: message
+    });
+
+    // --- 3️⃣ Retrieve prior messages for memory (last 5) ---
+    const { data: previousMsgs } = await supabase
+      .from("chat_messages")
+      .select("role, content")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true })
+      .limit(5);
+
+    const history = (previousMsgs || []).map((m) => ({
+      role: m.role,
+      content: m.content
+    }));
+
+    // --- 4️⃣ Call OpenAI ---
+    let replyText = "";
     try {
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -74,10 +139,11 @@ Compliance:
           messages: [
             { role: "system", content: persona.trim() },
             { role: "system", content: sessionContext },
+            ...history,
             { role: "user", content: message }
           ],
           temperature: 0.4,
-          max_tokens: 500
+          max_tokens: 600
         })
       }, 25000);
 
@@ -87,15 +153,22 @@ Compliance:
       }
 
       const data = await res.json();
-      const reply =
-        data?.choices?.[0]?.message?.content?.trim() ||
+      replyText = data?.choices?.[0]?.message?.content?.trim() ||
         "I couldn’t generate a response just now.";
-
-      return okReply(reply, []);
-    } catch (modelErr) {
-      console.error("OpenAI call failed:", modelErr);
-      return okReply(fallbackReply(ctx, message, "temporary model issue"), []);
+    } catch (err) {
+      console.error("OpenAI error:", err);
+      replyText = fallbackReply(ctx, message, "temporary model issue");
     }
+
+    // --- 5️⃣ Save assistant reply ---
+    await supabase.from("chat_messages").insert({
+      session_id: sessionId,
+      role: "assistant",
+      content: replyText
+    });
+
+    // --- 6️⃣ Return reply to UI ---
+    return okReply(replyText, []);
   } catch (err) {
     console.error("chat handler error:", err);
     return okReply(
@@ -105,7 +178,7 @@ Compliance:
   }
 };
 
-// ------------- helpers -------------
+// ---------- Helpers ----------
 function okReply(reply, citations) {
   return {
     statusCode: 200,

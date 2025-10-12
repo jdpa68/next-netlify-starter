@@ -1,11 +1,10 @@
 // netlify/functions/chat.js
-// Step 10d: Context Recall — adds ephemeral thread summary when history grows
-// CommonJS + Supabase logging + Jenn-style persona + safe fallbacks
+// Step 10e: Moderation & Guardrails + Session recall + Supabase logging + Jenn persona
 
 const { createClient } = require("@supabase/supabase-js");
 const MODEL = "gpt-4o-mini";
 
-// helper: fetch with timeout
+// ----------------- Helpers -----------------
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -13,18 +12,88 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   finally { clearTimeout(id); }
 }
 
-// quick, lightweight intent guess (helps with focus)
 function inferFocus(text = "") {
   const s = text.toLowerCase();
   const has = (...w) => w.some(x => s.includes(x));
-  if (has("retention", "persist", "student success", "advis")) return "issue_student_success";
-  if (has("accreditation", "rsi", "title iv", "compliance", "audit")) return "issue_compliance";
-  if (has("pricing", "net tuition", "discount", "budget", "aid", "fafsa", "pell")) return "issue_cost_pricing";
-  if (has("declin", "yield", "melt", "pipeline", "recruit", "inquiry", "enrollment")) return "issue_declining_enrollment";
-  if (has("quality", "learning outcomes", "curriculum", "instruction", "qm", "udl")) return "issue_academic_quality";
+  if (has("retention","persist","student success","advis")) return "issue_student_success";
+  if (has("accreditation","rsi","title iv","compliance","audit")) return "issue_compliance";
+  if (has("pricing","net tuition","discount","budget","aid","fafsa","pell")) return "issue_cost_pricing";
+  if (has("declin","yield","melt","pipeline","recruit","inquiry","enrollment")) return "issue_declining_enrollment";
+  if (has("quality","learning outcomes","curriculum","instruction","qm","udl")) return "issue_academic_quality";
   return "general";
 }
 
+// --- Moderation/guardrails: block sensitive or unsafe requests politely ---
+function checkModeration(message = "") {
+  const s = (message || "").toLowerCase();
+
+  // Length guard
+  if (s.length > 8000) {
+    return "That request is very long. Please share a shorter question or upload a file and tell me what you need from it.";
+  }
+
+  // Sensitive PII patterns (SSN, student ID-like)
+  const ssn = /\b\d{3}[- ]?\d{2}[- ]?\d{4}\b/;
+  const studentIdLike = /\b(stu(dent)?[- _]?(id|number)|empl(id|oyee id))\b/;
+
+  // Restricted topics (FERPA/HIPAA or direct student records)
+  const restrictedTerms = [
+    "ferpa", "hipaa", "phi", "student record", "student records",
+    "medical record", "ssn ", "social security", "private student data"
+  ];
+
+  // Basic profanity/abuse (light)
+  const profane = /\b(fuck|shit|bitch|asshole|idiot)\b/;
+
+  if (ssn.test(s)) {
+    return "I can’t process Social Security numbers or similar personal identifiers. Please remove sensitive IDs and ask again.";
+  }
+  if (studentIdLike.test(s)) {
+    return "I can’t access or discuss individual student or employee IDs. Share the scenario without identifiers and I’ll help with policy and best practice.";
+  }
+  if (restrictedTerms.some(t => s.includes(t))) {
+    return "I can’t access individual student or medical records. I can share policy guidance and campus-safe procedures if you describe the situation broadly.";
+  }
+  if (profane.test(s)) {
+    return "Let’s keep things professional. If you share your goal or challenge, I’ll suggest actionable next steps.";
+  }
+  return null; // safe to proceed
+}
+
+// Polite fallback
+function fallbackReply(ctx, message, reason) {
+  const greet = ctx.firstName
+    ? (ctx.institutionName ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.` : `Hi ${ctx.firstName}.`)
+    : "Hello there.";
+  const note = reason ? `\n\n(Quick fallback because: ${reason}.)` : "";
+  const next = "\n\nNext step: ask me another question or share a document you’d like help summarizing.";
+  return `${greet}\n\nI received your message: “${message}”.${note}${next}`;
+}
+
+async function summarizeThread(apiKey, text) {
+  const prompt = `
+Summarize the earlier parts of this higher-ed conversation into a crisp, <120-word briefing.
+Focus on user goals, constraints, and chosen directions. Plain sentences. No fluff.
+
+Conversation:
+${text}
+`;
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 220
+    })
+  });
+  if (!res.ok) throw new Error(`Summarizer ${res.status}`);
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content?.trim() || null;
+}
+
+// ----------------- Handler -----------------
 exports.handler = async (event) => {
   try {
     if (event.httpMethod !== "POST") {
@@ -50,6 +119,31 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
     }
 
+    // ---- 10e: Moderation check BEFORE any model call ----
+    const mod = checkModeration(message);
+    if (mod) {
+      // Return a safe redirect; still log the interaction
+      if (!sessionId) {
+        const { data: newSession } = await supabase
+          .from("chat_sessions")
+          .insert({
+            user_name: ctx.firstName || null,
+            institution: ctx.institutionName || null,
+            inst_url: ctx.inst_url || null,
+            unit_id: ctx.unit_id || null
+          })
+          .select().single();
+        sessionId = newSession?.id || null;
+      }
+      if (sessionId) {
+        await supabase.from("chat_messages").insert([
+          { session_id: sessionId, role: "user", content: message },
+          { session_id: sessionId, role: "assistant", content: mod }
+        ]);
+      }
+      return ok({ reply: mod, citations: [], sessionId });
+    }
+
     // --- Persona (Jenn-style) ---
     const persona = `
 You are **Lancelot**, the higher-education consultant built by PeerQuest.
@@ -72,19 +166,17 @@ Compliance:
 • Flag uncertainty honestly and suggest where to verify.
 `;
 
-    // Session context line
     const contextLines = [
       ctx.firstName ? `User: ${ctx.firstName}` : null,
       ctx.institutionName ? `Institution: ${ctx.institutionName}` : null,
       ctx.inst_url ? `.edu: ${ctx.inst_url}` : null,
       ctx.unit_id ? `IPEDS ID: ${ctx.unit_id}` : null
     ].filter(Boolean);
-
     const sessionContext = contextLines.length
       ? `Session context → ${contextLines.join(" · ")}`
       : "Session context → General (no school set)";
 
-    // 1) Ensure we have a session
+    // 1) Ensure session
     if (!sessionId) {
       const { data: newSession, error: insErr } = await supabase
         .from("chat_sessions")
@@ -94,8 +186,7 @@ Compliance:
           inst_url: ctx.inst_url || null,
           unit_id: ctx.unit_id || null
         })
-        .select()
-        .single();
+        .select().single();
       if (insErr) console.error("session insert error:", insErr);
       sessionId = newSession?.id || null;
     } else {
@@ -106,7 +197,7 @@ Compliance:
       if (updErr) console.error("session update error:", updErr);
     }
 
-    // 2) Save user's message
+    // 2) Save user message
     if (sessionId) {
       const { error: msgErr } = await supabase.from("chat_messages").insert({
         session_id: sessionId,
@@ -116,7 +207,7 @@ Compliance:
       if (msgErr) console.error("user msg insert error:", msgErr);
     }
 
-    // 3) Load prior messages for recall (up to 24 items)
+    // 3) Load prior history and build summary if long
     let history = [];
     let totalCount = 0;
     if (sessionId) {
@@ -126,28 +217,25 @@ Compliance:
         .eq("session_id", sessionId)
         .order("created_at", { ascending: true });
       if (histErr) console.error("history select error:", histErr);
-
       const items = prior || [];
       totalCount = items.length;
 
-      // Keep last ~10 messages for direct context
       const tail = items.slice(-10).map(m => ({ role: m.role, content: m.content }));
       history = tail;
 
-      // If thread is long, create a short summary of earlier turns
       if (items.length > 12) {
         const earlier = items.slice(0, -10).map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
-        const summary = await summarizeThread(apiKey, earlier).catch(() => null);
-        if (summary) {
-          history = [
-            { role: "system", content: `Thread summary:\n${summary}` },
-            ...history
-          ];
+        try {
+          const summary = await summarizeThread(apiKey, earlier);
+          if (summary) {
+            history = [{ role: "system", content: `Thread summary:\n${summary}` }, ...history];
+          }
+        } catch (e) {
+          console.error("summary error:", e);
         }
       }
     }
 
-    // lightweight focus (for future tuning; no UI change)
     const focusTag = ctx.pref_area || inferFocus(`${message}`);
 
     // 4) Call OpenAI
@@ -164,7 +252,6 @@ Compliance:
           messages: [
             { role: "system", content: persona.trim() },
             { role: "system", content: sessionContext },
-            // focus hint
             { role: "system", content: `Focus hint: ${focusTag}` },
             ...history,
             { role: "user", content: message }
@@ -197,63 +284,28 @@ Compliance:
       if (asstErr) console.error("assistant msg insert error:", asstErr);
     }
 
-    // 6) Return reply + sessionId
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ok: true,
-        reply: replyText,
-        citations: [],
-        sessionId,
-        meta: { totalMessages: totalCount, focusTag }
-      })
-    };
+    // 6) Return
+    return ok({
+      reply: replyText,
+      citations: [],
+      sessionId,
+      meta: { focusTag, totalMessages: totalCount }
+    });
   } catch (err) {
     console.error("chat handler error:", err);
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ok: true,
-        reply: "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
-        citations: [],
-        sessionId: null
-      })
-    };
+    return ok({
+      reply: "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
+      citations: [],
+      sessionId: null
+    });
   }
 };
 
-// --- helpers ---
-
-async function summarizeThread(apiKey, text) {
-  const prompt = `
-Summarize the earlier parts of this higher-ed conversation into a crisp, <120-word briefing a consultant would use.
-Focus on the user's goals, constraints, and any chosen direction. No fluff. Plain sentences.
-
-Conversation:
-${text}
-`;
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
-      max_tokens: 220
-    })
-  });
-  if (!res.ok) throw new Error(`Summarizer ${res.status}`);
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content?.trim() || null;
-}
-
-function fallbackReply(ctx, message, reason) {
-  const greet = ctx.firstName
-    ? (ctx.institutionName ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.` : `Hi ${ctx.firstName}.`)
-    : "Hello there.";
-  const note = reason ? `\n\n(Quick fallback because: ${reason}.)` : "";
-  const next = "\n\nNext step: ask me another question or share a document you’d like help summarizing.";
-  return `${greet}\n\nI received your message: “${message}”.${note}${next}`;
+// --------------- tiny util ---------------
+function ok(payload) {
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ok: true, ...payload })
+  };
 }

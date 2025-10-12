@@ -1,52 +1,46 @@
-// netlify/functions/chat.js  (DEBUG MODE)
-export async function handler(event) {
-  const CORS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Content-Type": "application/json"
-  };
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: CORS, body: "" };
-  }
+// netlify/functions/chat.js
+// Step 10b-1: Starter "brain" — no model call yet.
+// Returns a structured, Jenn-style echo so we can test the plumbing.
 
+exports.handler = async (event) => {
   try {
-    const body = JSON.parse(event.body || "{}");
-    const userText = (body.text || body.message || "").toString();
-
-    // ---- Minimal supabase smoke test (no search yet) ----
-    const { createClient } = await import("@supabase/supabase-js");
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-      throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY env variable");
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, body: "Method Not Allowed" };
     }
 
-    const supabase = createClient(supabaseUrl, supabaseKey);
-    const { data, error } = await supabase
-      .from("knowledge_base")
-      .select("id")
-      .limit(1);
+    const body = JSON.parse(event.body || "{}");
+    const message = (body.message || "").toString().trim();
+    const ctx = body.ctx || {}; // { firstName, institutionName, inst_url, unit_id }
 
-    if (error) throw error;
+    if (!message) {
+      return { statusCode: 400, body: JSON.stringify({ error: "Missing 'message' in request body" }) };
+    }
 
-    // If we got here, env + client + table name are good.
-    const reply = `Debug OK. You said: "${userText}". Supabase reachable; KB rows present: ${data?.length ?? 0}.`;
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ reply }) };
+    // Build a friendly, structured response (no AI yet)
+    const greeting = ctx.firstName
+      ? (ctx.institutionName ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.` : `Hi ${ctx.firstName}.`)
+      : "Hi there.";
 
-  } catch (err) {
-    // Expose the real error so we know what to fix
-    const message = err?.message || String(err);
-    const stack = err?.stack || "";
+    const lines = [
+      greeting,
+      "I heard:",
+      `• "${message}"`,
+      "",
+      "This is a placeholder reply from the /chat function (no AI model yet).",
+      "Next step: we’ll call the model and return a real answer with citations."
+    ];
+
     return {
       statusCode: 200,
-      headers: CORS,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        reply: `DEBUG ERROR: ${message}`,
-        error: { message, stack }
+        ok: true,
+        reply: lines.join("\n"),
+        citations: [] // placeholder
       })
     };
+  } catch (e) {
+    console.error("chat error:", e);
+    return { statusCode: 500, body: JSON.stringify({ error: "Server error" }) };
   }
-}
-
+};

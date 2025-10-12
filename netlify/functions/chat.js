@@ -1,7 +1,7 @@
 // netlify/functions/chat.js
 // Working "brain": calls OpenAI; if anything fails, returns a friendly fallback.
 
-const MODEL = "gpt-4o-mini";
+const MODEL = "gpt-3.5-turbo";
 
 // helper for fetch with timeout
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {

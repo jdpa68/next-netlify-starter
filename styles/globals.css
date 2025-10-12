@@ -41,3 +41,14 @@ html, body {
   line-height: 1.6;
   -webkit-text-size-adjust: 100%;
 }
+
+/* 9.4d-2 — Header and Card Spacing */
+header {
+  padding-top: 1.2rem;
+  padding-bottom: 1.2rem;
+}
+
+main section {
+  padding: 1.25rem 1.5rem;
+  border-radius: 1rem;
+}

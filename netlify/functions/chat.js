@@ -1,10 +1,11 @@
 // netlify/functions/chat.js
-// Step 10c-2: Adds Supabase logging for session + message memory
+// Step 10c-2: Supabase logging (CommonJS require) + Lancelot persona
+
+const { createClient } = require("@supabase/supabase-js");
 
 const MODEL = "gpt-4o-mini";
-const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
 
-// Helper: fetch with timeout
+// helper for fetch with timeout
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -42,7 +43,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
     }
 
-    // -------- Persona Prompt --------
+    // --- Persona prompt (Jenn-style) ---
     const persona = `
 You are **Lancelot**, the higher-education consultant built by PeerQuest.
 Your mission: help campus leaders, faculty, and staff make better decisions about enrollment, retention, finance, and academic quality.
@@ -56,7 +57,7 @@ Tone:
 Voice:
 • Start with the user’s name if available.
 • Acknowledge their institution context.
-• Offer 2-3 actionable insights, then a helpful next step.
+• Offer 2–3 actionable insights, then a helpful next step.
 • Cite or reference your Knowledge Base when possible (“According to national benchmarks…”).
 
 Compliance:
@@ -75,24 +76,28 @@ Compliance:
       ? `Session context → ${contextLines.join(" · ")}`
       : "Session context → General (no school set)";
 
-    // --- 1️⃣ Get or create session ---
+    // --- 1) Get or create session ---
     let sessionId = null;
-    const { data: session } = await supabase
+    const { data: session, error: selErr } = await supabase
       .from("chat_sessions")
       .select("id")
       .eq("user_name", ctx.firstName || null)
       .eq("institution", ctx.institutionName || null)
       .order("created_at", { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
+
+    if (selErr) console.error("session select error:", selErr);
 
     if (session) {
       sessionId = session.id;
-      await supabase.from("chat_sessions")
+      const { error: updErr } = await supabase
+        .from("chat_sessions")
         .update({ last_active: new Date().toISOString() })
         .eq("id", sessionId);
+      if (updErr) console.error("session update error:", updErr);
     } else {
-      const { data: newSession } = await supabase
+      const { data: newSession, error: insErr } = await supabase
         .from("chat_sessions")
         .insert({
           user_name: ctx.firstName || null,
@@ -102,30 +107,34 @@ Compliance:
         })
         .select()
         .single();
-      sessionId = newSession?.id;
+      if (insErr) console.error("session insert error:", insErr);
+      sessionId = newSession?.id || null;
     }
 
-    // --- 2️⃣ Save user question ---
-    await supabase.from("chat_messages").insert({
-      session_id: sessionId,
-      role: "user",
-      content: message
-    });
+    // --- 2) Save user question ---
+    if (sessionId) {
+      const { error: msgInsErr } = await supabase.from("chat_messages").insert({
+        session_id: sessionId,
+        role: "user",
+        content: message
+      });
+      if (msgInsErr) console.error("user msg insert error:", msgInsErr);
+    }
 
-    // --- 3️⃣ Retrieve prior messages for memory (last 5) ---
-    const { data: previousMsgs } = await supabase
-      .from("chat_messages")
-      .select("role, content")
-      .eq("session_id", sessionId)
-      .order("created_at", { ascending: true })
-      .limit(5);
+    // --- 3) Retrieve last few messages for memory ---
+    let history = [];
+    if (sessionId) {
+      const { data: previousMsgs, error: histErr } = await supabase
+        .from("chat_messages")
+        .select("role, content")
+        .eq("session_id", sessionId)
+        .order("created_at", { ascending: true })
+        .limit(5);
+      if (histErr) console.error("history select error:", histErr);
+      history = (previousMsgs || []).map((m) => ({ role: m.role, content: m.content }));
+    }
 
-    const history = (previousMsgs || []).map((m) => ({
-      role: m.role,
-      content: m.content
-    }));
-
-    // --- 4️⃣ Call OpenAI ---
+    // --- 4) Call OpenAI ---
     let replyText = "";
     try {
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
@@ -160,14 +169,17 @@ Compliance:
       replyText = fallbackReply(ctx, message, "temporary model issue");
     }
 
-    // --- 5️⃣ Save assistant reply ---
-    await supabase.from("chat_messages").insert({
-      session_id: sessionId,
-      role: "assistant",
-      content: replyText
-    });
+    // --- 5) Save assistant reply ---
+    if (sessionId) {
+      const { error: asstErr } = await supabase.from("chat_messages").insert({
+        session_id: sessionId,
+        role: "assistant",
+        content: replyText
+      });
+      if (asstErr) console.error("assistant msg insert error:", asstErr);
+    }
 
-    // --- 6️⃣ Return reply to UI ---
+    // --- 6) Return reply ---
     return okReply(replyText, []);
   } catch (err) {
     console.error("chat handler error:", err);
@@ -178,7 +190,7 @@ Compliance:
   }
 };
 
-// ---------- Helpers ----------
+// ---------- helpers ----------
 function okReply(reply, citations) {
   return {
     statusCode: 200,

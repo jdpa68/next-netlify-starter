@@ -1,10 +1,6 @@
 // pages_app/index.js
-// Auth-aware chat guard: requires Supabase Auth session.
-// If not signed in, redirect to /login.
-// If signed in but no profile in DB yet, allow chat but show a note to complete /register.
-
 import React, { useEffect, useRef, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "./lib/supabaseClient";
 
 const SESSION_KEY = "lancelot_session";
 const CTX_KEY = "lancelot_ctx";
@@ -21,7 +17,6 @@ export default function ChatPage() {
   const [profile, setProfile] = useState(null);
   const inputRef = useRef(null);
 
-  // ---- Auth guard ----
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       const s = data?.session || null;
@@ -40,7 +35,6 @@ export default function ChatPage() {
   }, []);
 
   async function fetchProfile(user) {
-    // Try to fetch a profile row if you have a table (optional)
     try {
       const { data, error } = await supabase
         .from("users")
@@ -52,7 +46,6 @@ export default function ChatPage() {
     } catch {}
   }
 
-  // ---- Init local session + history ----
   useEffect(() => {
     const sid = localStorage.getItem(SESSION_KEY);
     const ctxRaw = localStorage.getItem(CTX_KEY);
@@ -125,12 +118,8 @@ export default function ChatPage() {
       <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>Lancelot</h1>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button onClick={handleReset} title="Reset conversation (clears memory + session)">
-            Reset
-          </button>
-          <a href="/account" style={{ textDecoration: "none" }}>
-            <button title="Go to your Library/Account">Account</button>
-          </a>
+          <button onClick={handleReset} title="Reset conversation (clears memory + session)">Reset</button>
+          <a href="/account" style={{ textDecoration: "none" }}><button title="Go to your Library/Account">Account</button></a>
         </div>
       </header>
 
@@ -157,17 +146,8 @@ export default function ChatPage() {
       </section>
 
       <form onSubmit={sendMessage} style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your question…"
-          style={{ flex: 1 }}
-          disabled={busy || !authed}
-        />
-        <button disabled={busy || !input.trim() || !authed} type="submit">
-          {busy ? "Thinking…" : "Send"}
-        </button>
+        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type your question…" style={{ flex: 1 }} disabled={busy || !authed} />
+        <button disabled={busy || !input.trim() || !authed} type="submit">{busy ? "Thinking…" : "Send"}</button>
       </form>
 
       {citations.length > 0 && (
@@ -177,11 +157,7 @@ export default function ChatPage() {
             {citations.map((c, idx) => (
               <li key={c.id || idx}>
                 <div style={{ fontWeight: 500 }}>{c.title || "Untitled"}</div>
-                {c.url && (
-                  <div>
-                    <a href={c.url} target="_blank" rel="noreferrer">{c.url}</a>
-                  </div>
-                )}
+                {c.url && (<div><a href={c.url} target="_blank" rel="noreferrer">{c.url}</a></div>)}
               </li>
             ))}
           </ol>

@@ -106,7 +106,7 @@ export default function LoginPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@school.edu"
+                  placeholder="Enter your email"
                   required
                   style={{
                     padding: "12px 14px",
@@ -162,7 +162,7 @@ export default function LoginPage() {
         </section>
 
         <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
-          Having trouble? Email support@peerquest.ai
+          Having trouble? Email jdunn@pqrecruiting.com
         </div>
       </main>
     </div>

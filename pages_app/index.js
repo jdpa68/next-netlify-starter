@@ -194,7 +194,7 @@ export default function ChatPage() {
               <input
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask Lancelot… e.g., ‘How can we reduce summer melt?’"
+                placeholder="Ask Lancelot… e.g., ‘How can we improve online enrollment?’"
                 className="flex-grow rounded-xl border border-gray-300 px-3 py-2 text-sm"
               />
               <button

@@ -1,6 +1,6 @@
 // ===========================================
 // netlify/functions/chat.js
-// Step 11c — Knowledge Base Retrieval + Citations
+// Step 11d — Conversational Consultant Voice + KB Context
 // ===========================================
 
 const { createClient } = require("@supabase/supabase-js");
@@ -20,9 +20,8 @@ exports.handler = async (event) => {
     const apiKey = process.env.OPENAI_API_KEY;
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!apiKey || !supabaseUrl || !supabaseServiceKey) {
+    if (!apiKey || !supabaseUrl || !supabaseServiceKey)
       return json200({ ok: false, error: "Missing environment variables." });
-    }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     const body = JSON.parse(event.body || "{}");
@@ -32,7 +31,7 @@ exports.handler = async (event) => {
 
     if (!message) return json200({ ok: false, error: "Missing message." });
 
-    // --- Step 1: Call knowledge-search for evidence ---
+    // --- Step 1: Knowledge Base lookup
     const prefArea = ctx.pref_area || ctx.prefArea || null;
     const kbRes = await fetchWithTimeout(`${process.env.URL || ""}/.netlify/functions/knowledge-search`, {
       method: "POST",
@@ -42,62 +41,63 @@ exports.handler = async (event) => {
 
     const evidence = Array.isArray(kbRes?.results) ? kbRes.results.slice(0, 5) : [];
 
-    // Build readable evidence snippet for context
-    let evidenceText = "";
-    if (evidence.length > 0) {
-      const formatted = evidence.map((r, i) => `${i + 1}. ${r.title || "Untitled"} — ${r.summary || ""}`).join("\n");
-      evidenceText = `\nRelevant knowledge base entries:\n${formatted}\n\nUse these for factual grounding and cite them naturally in your answer.`;
-    } else {
-      evidenceText = "\n(No direct knowledge base entries found; answer based on general higher-ed best practices.)";
-    }
+    const evidenceText = evidence.length
+      ? evidence.map((r, i) => `${i + 1}. ${r.title || "Untitled"} — ${r.summary || ""}`).join("\n")
+      : "(No direct knowledge base entries found; use best higher-ed practice.)";
 
-    // --- Persona ---
+    // --- Step 2: Persona & style instructions
     const persona = `
-You are Lancelot, the higher-education consultant built by PeerQuest.
-Use a calm, data-driven tone.
-If evidence from the Knowledge Base is available, summarize key points and cite titles naturally (e.g., “According to IPEDS Benchmark Trends…”).
-Keep answers ≤150 words, offer 2–3 actionable ideas + a next step.
+You are Lancelot, a conversational higher-ed consultant built by PeerQuest.
+Your tone is professional but warm, collaborative, and peer-like.
+You never lecture. You respond as if in dialogue with a colleague.
+
+STYLE & VOICE RULES:
+• Always start with a short greeting (e.g., “Hi Jim —”) if name known.
+• Give a one-line diagnostic: what this seems to be about.
+• Offer 2–3 concise, actionable recommendations in bullets.
+• If the question is vague or missing data, ask 1–2 clarifying questions before concluding.
+• End with “Next Step:” — a specific, do-able action for tomorrow.
+• Keep under 150 words unless asked to expand.
+• Favor friendly, conversational phrasing (“let’s look at,” “you might try”).
+• Cite sources naturally using phrases like “According to recent retention studies…” instead of numeric citations.
+• Prioritize the top knowledge base summaries below before general reasoning.
+
+Knowledge Base Insights:
+${evidenceText}
 `;
 
-    // --- System context ---
+    // --- Step 3: Session context
     const contextLines = [
       ctx.firstName ? `User: ${ctx.firstName}` : null,
       ctx.institutionName ? `Institution: ${ctx.institutionName}` : null,
       ctx.org_type ? `Org type: ${ctx.org_type}` : null
     ].filter(Boolean);
-    const sessionContext = contextLines.length ? `Session context → ${contextLines.join(" · ")}` : "";
+    const sessionContext = contextLines.length ? contextLines.join(" · ") : "";
 
-    // --- Step 2: Main model call ---
+    // --- Step 4: Compose messages
+    const messages = [
+      { role: "system", content: persona },
+      { role: "system", content: sessionContext },
+      { role: "user", content: message }
+    ];
+
+    // --- Step 5: Call OpenAI
     let replyText = "";
     try {
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            { role: "system", content: persona.trim() },
-            { role: "system", content: sessionContext },
-            { role: "system", content: evidenceText },
-            { role: "user", content: message }
-          ],
-          temperature: 0.4,
-          max_tokens: 600
-        })
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: MODEL, messages, temperature: 0.6, max_tokens: 600 })
       }, 25000);
-
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       replyText = data?.choices?.[0]?.message?.content?.trim() || "No reply.";
     } catch (err) {
-      console.error("OpenAI call failed:", err);
+      console.error("OpenAI error:", err);
       replyText = "I hit a temporary issue reaching the model. Please try again.";
     }
 
-    // --- Step 3: Save assistant reply (optional logging) ---
+    // --- Step 6: Save assistant reply (optional)
     try {
       if (sessionId) {
         await supabase.from("chat_messages").insert({
@@ -107,10 +107,10 @@ Keep answers ≤150 words, offer 2–3 actionable ideas + a next step.
         });
       }
     } catch (e) {
-      console.warn("logging skipped:", e.message);
+      console.warn("Logging skipped:", e.message);
     }
 
-    // --- Step 4: Return reply + citations ---
+    // --- Step 7: Return reply & citations
     const citations = evidence.map((r) => ({
       title: r.title,
       source_url: r.source_url
@@ -123,11 +123,7 @@ Keep answers ≤150 words, offer 2–3 actionable ideas + a next step.
   }
 };
 
-// --- Helper ---
+// --- Utility
 function json200(payload) {
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  };
+  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
 }

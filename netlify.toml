@@ -24,3 +24,7 @@
   name = "snoopy-run"
   cron = "15 * * * *"
 
+# --- Lancelot: pin Next.js plugin (safe append) ---
+[[plugins]]
+package = "@netlify/plugin-nextjs"
+version = "5.13.5"

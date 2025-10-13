@@ -1,6 +1,6 @@
 // ===========================================
 // Lancelot — Chat Interface (Main Page)
-// With: Recent questions panel (current session)
+// With: Recent questions panel + Evidence drawer
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -22,7 +22,7 @@ const BRAND = {
 const LS_CTX = "lancelot_ctx";
 const LS_SESSION = "lancelot_session";
 
-// small helper
+// helpers
 function saveSessionId(id) {
   try {
     if (typeof window !== "undefined") {
@@ -30,6 +30,17 @@ function saveSessionId(id) {
       else localStorage.removeItem(LS_SESSION);
     }
   } catch {}
+}
+function loadCtx() {
+  try {
+    const raw = typeof window !== "undefined" && localStorage.getItem(LS_CTX);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function loadSession() {
+  try {
+    return typeof window !== "undefined" && localStorage.getItem(LS_SESSION);
+  } catch { return null; }
 }
 
 export default function ChatPage() {
@@ -47,22 +58,20 @@ export default function ChatPage() {
   const prerollRef = useRef(null);
   const timerRef = useRef(null);
 
-  // recent questions (this session only)
+  // recent questions (this session)
   const [recent, setRecent] = useState([]);
+
+  // citations
+  const [citations, setCitations] = useState([]);
+  const [showCites, setShowCites] = useState(false);
 
   // load context & session
   useEffect(() => {
-    try {
-      const raw = typeof window !== "undefined" && localStorage.getItem(LS_CTX);
-      if (raw) setCtx(JSON.parse(raw));
-    } catch {}
-    try {
-      const sid = typeof window !== "undefined" && localStorage.getItem(LS_SESSION);
-      if (sid) setSessionId(sid);
-    } catch {}
+    setCtx(loadCtx());
+    setSessionId(loadSession());
   }, []);
 
-  // load recent messages for this session
+  // load recent for current session
   useEffect(() => {
     (async () => {
       if (!sessionId) { setRecent([]); return; }
@@ -76,7 +85,9 @@ export default function ChatPage() {
           .limit(5);
         if (error) throw error;
         setRecent((data || []).map(r => ({ text: r.content, ts: r.created_at })));
-      } catch { setRecent([]); }
+      } catch {
+        setRecent([]);
+      }
     })();
   }, [sessionId]);
 
@@ -99,7 +110,7 @@ export default function ChatPage() {
     }, 350);
   };
 
-  // submit
+  // ask
   const onAsk = async (e) => {
     e?.preventDefault?.();
     const q = (question || "").trim();
@@ -107,6 +118,9 @@ export default function ChatPage() {
 
     setBusy(true);
     setDisplayed("");
+    setCitations([]);
+    setShowCites(false);
+
     try {
       const res = await fetch("/.netlify/functions/chat", {
         method: "POST",
@@ -118,19 +132,24 @@ export default function ChatPage() {
         })
       });
       const data = await res.json().catch(() => ({}));
-      const reply = data?.reply || "I couldn’t generate a response just now.";
+
+      // sessionId update from server
       if (data?.sessionId && data.sessionId !== sessionId) {
         setSessionId(data.sessionId);
         saveSessionId(data.sessionId);
       }
 
-      // push into recent (optimistic, for current session)
+      // optimistic add to recent
       setRecent(prev => [{ text: q, ts: new Date().toISOString() }, ...prev].slice(0, 5));
 
-      // typewriter
+      const reply = data?.reply || "I couldn’t generate a response just now.";
       startTyping(reply);
+
+      // citations
+      setCitations(Array.isArray(data?.citations) ? data.citations.filter(c => c?.title) : []);
     } catch {
       setDisplayed("Error: could not reach chat function.");
+      setCitations([]);
     } finally {
       setBusy(false);
     }
@@ -139,6 +158,7 @@ export default function ChatPage() {
   // tiny utils
   const short = (s) => (s.length > 80 ? s.slice(0, 77) + "…" : s);
   const hasRecent = useMemo(() => Array.isArray(recent) && recent.length > 0, [recent]);
+  const hasCitations = useMemo(() => Array.isArray(citations) && citations.length > 0, [citations]);
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: BRAND.primary, color: BRAND.white }}>
@@ -174,7 +194,7 @@ export default function ChatPage() {
               <input
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask Lancelot… e.g., ‘How can we improve our online program enrollment?’"
+                placeholder="Ask Lancelot… e.g., ‘How can we reduce summer melt?’"
                 className="flex-grow rounded-xl border border-gray-300 px-3 py-2 text-sm"
               />
               <button
@@ -205,15 +225,52 @@ export default function ChatPage() {
             </div>
 
             {/* Answer */}
-            <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
+            <div className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
               {displayed || "Your answer will appear here."}
             </div>
+
+            {/* Evidence drawer */}
+            {hasCitations && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowCites(v => !v)}
+                  className="text-xs underline"
+                >
+                  {showCites ? "Hide Evidence" : "Show Evidence"}
+                </button>
+
+                {showCites && (
+                  <div className="mt-2 rounded-xl border border-gray-200 bg-white">
+                    <ul className="divide-y divide-gray-200">
+                      {citations.map((c, idx) => (
+                        <li key={idx} className="px-3 py-2 text-sm">
+                          <div className="font-medium">{c.title || "Untitled"}</div>
+                          {c.source_url ? (
+                            <a
+                              href={c.source_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs underline text-gray-700"
+                            >
+                              {c.source_url}
+                            </a>
+                          ) : (
+                            <div className="text-xs text-gray-500">No external link</div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Recent panel */}
             {hasRecent && (
               <div className="mt-4">
                 <div className="text-xs font-semibold text-gray-600 mb-1">Recent in this conversation</div>
-                <div className="rounded-xl border border-gray-200 bg-white">
+                <div className="rounded-2xl border border-gray-200 bg-white">
                   {recent.map((r, idx) => (
                     <button
                       type="button"

@@ -1,129 +1,179 @@
-// ===========================================
 // netlify/functions/chat.js
-// Step 11d — Conversational Consultant Voice + KB Context
-// ===========================================
+// Step 11e — FIXED (session + memory + KB citations)
+// Expects: POST JSON {
+//   message: string,
+//   sessionId?: string,
+//   history?: Array<{role: "user"|"assistant"|"system", content: string}>,
+//   pref_area?: string
+// }
+// Returns: { ok, sessionId, reply, citations: Array, evidence: Array, used_messages }
+//
+// Notes:
+// - Generates a sessionId if missing (client should store it in lancelot_session).
+// - Uses last 5 exchanges from provided history for lightweight conversation memory.
+// - Pulls KB context via the sibling Netlify function `knowledge-search`.
+// - Injects KB snippets into the system prompt for grounded answers with citations.
 
-const { createClient } = require("@supabase/supabase-js");
-const MODEL = "gpt-4o-mini";
-
-async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), timeoutMs);
-  try { return await fetch(url, { ...options, signal: ctrl.signal }); }
-  finally { clearTimeout(id); }
-}
+const crypto = require("crypto");
 
 exports.handler = async (event) => {
   try {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, body: "Method Not Allowed" };
+    }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!apiKey || !supabaseUrl || !supabaseServiceKey)
-      return json200({ ok: false, error: "Missing environment variables." });
+    const body = safeJson(event.body);
+    const userMessage = ((body.message || "").toString() || "").trim();
+    if (!userMessage) {
+      return json200({ ok: false, error: "Missing message" });
+    }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    const body = JSON.parse(event.body || "{}");
-    const message = (body.message || "").trim();
-    const ctx = body.ctx || {};
-    let sessionId = body.sessionId || null;
+    // Session
+    const sessionId = (body.sessionId && String(body.sessionId)) || crypto.randomUUID();
 
-    if (!message) return json200({ ok: false, error: "Missing message." });
+    // History: keep last 10 turns max, but we will downselect to 5 in prompt
+    const incomingHistory = Array.isArray(body.history) ? body.history : [];
+    const cleanedHistory = incomingHistory
+      .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      .slice(-10);
 
-    // --- Step 1: Knowledge Base lookup
-    const prefArea = ctx.pref_area || ctx.prefArea || null;
-    const kbRes = await fetchWithTimeout(`${process.env.URL || ""}/.netlify/functions/knowledge-search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ q: message, pref_area: prefArea, limit: 5 })
-    }, 15000).then(r => r.json()).catch(() => ({ ok: false }));
+    const prefArea = (body.pref_area || body.prefArea || "").toString().trim();
 
-    const evidence = Array.isArray(kbRes?.results) ? kbRes.results.slice(0, 5) : [];
+    // ---- Retrieve KB context via internal function ----
+    const kbResults = await searchKBInternal(event, {
+      q: userMessage,
+      pref_area: prefArea,
+      limit: 5
+    });
 
-    const evidenceText = evidence.length
-      ? evidence.map((r, i) => `${i + 1}. ${r.title || "Untitled"} — ${r.summary || ""}`).join("\n")
-      : "(No direct knowledge base entries found; use best higher-ed practice.)";
+    // Build KB snippets + citations
+    const snippets = kbResults.map(r => formatSnippet(r)).join("\n\n");
+    const citations = kbResults.map(r => ({
+      id: r.id,
+      title: r.title,
+      url: r.source_url || null
+    }));
+    const evidence = kbResults; // pass-through for your Evidence Drawer
 
-    // --- Step 2: Persona & style instructions
-    const persona = `
-You are Lancelot, a conversational higher-ed consultant built by PeerQuest.
-Your tone is professional but warm, collaborative, and peer-like.
-You never lecture. You respond as if in dialogue with a colleague.
-
-STYLE & VOICE RULES:
-• Always start with a short greeting (e.g., “Hi Jim —”) if name known.
-• Give a one-line diagnostic: what this seems to be about.
-• Offer 2–3 concise, actionable recommendations in bullets.
-• If the question is vague or missing data, ask 1–2 clarifying questions before concluding.
-• End with “Next Step:” — a specific, do-able action for tomorrow.
-• Keep under 150 words unless asked to expand.
-• Favor friendly, conversational phrasing (“let’s look at,” “you might try”).
-• Cite sources naturally using phrases like “According to recent retention studies…” instead of numeric citations.
-• Prioritize the top knowledge base summaries below before general reasoning.
-
-Knowledge Base Insights:
-${evidenceText}
-`;
-
-    // --- Step 3: Session context
-    const contextLines = [
-      ctx.firstName ? `User: ${ctx.firstName}` : null,
-      ctx.institutionName ? `Institution: ${ctx.institutionName}` : null,
-      ctx.org_type ? `Org type: ${ctx.org_type}` : null
-    ].filter(Boolean);
-    const sessionContext = contextLines.length ? contextLines.join(" · ") : "";
-
-    // --- Step 4: Compose messages
+    // ---- Compose messages for the model ----
+    const system = buildSystemPrompt(snippets);
+    const historyForModel = cleanedHistory.slice(-10);
     const messages = [
-      { role: "system", content: persona },
-      { role: "system", content: sessionContext },
-      { role: "user", content: message }
+      { role: "system", content: system },
+      ...historyForModel,
+      { role: "user", content: userMessage }
     ];
 
-    // --- Step 5: Call OpenAI
-    let replyText = "";
-    try {
-      const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: MODEL, messages, temperature: 0.6, max_tokens: 600 })
-      }, 25000);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      replyText = data?.choices?.[0]?.message?.content?.trim() || "No reply.";
-    } catch (err) {
-      console.error("OpenAI error:", err);
-      replyText = "I hit a temporary issue reaching the model. Please try again.";
-    }
+    // ---- Call OpenAI (or compatible) ----
+    const { reply, used_messages } = await callOpenAI(messages);
 
-    // --- Step 6: Save assistant reply (optional)
-    try {
-      if (sessionId) {
-        await supabase.from("chat_messages").insert({
-          session_id: sessionId,
-          role: "assistant",
-          content: replyText
-        });
-      }
-    } catch (e) {
-      console.warn("Logging skipped:", e.message);
-    }
-
-    // --- Step 7: Return reply & citations
-    const citations = evidence.map((r) => ({
-      title: r.title,
-      source_url: r.source_url
-    }));
-
-    return json200({ ok: true, reply: replyText, citations, sessionId });
+    // Return payload with citations + evidence
+    return json200({
+      ok: true,
+      sessionId,
+      reply,
+      citations,
+      evidence,
+      used_messages
+    });
   } catch (err) {
-    console.error("chat handler error:", err);
-    return json200({ ok: false, error: "Server error." });
+    console.error("chat error:", err);
+    return json200({ ok: false, error: "Server error" });
   }
 };
 
-// --- Utility
+/**
+ * Helpers
+ */
+
 function json200(payload) {
-  return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  };
+}
+
+function safeJson(body) {
+  try { return JSON.parse(body || "{}"); }
+  catch { return {}; }
+}
+
+// Build the system prompt with persona + KB snippets (grounding)
+function buildSystemPrompt(snippets) {
+  return [
+    "You are Lancelot, a higher-education enrollment & student-success copilot.",
+    "Be concise, stepwise, and cite evidence using [#] markers tied to provided sources.",
+    "Only cite from the provided 'KB Snippets' section.",
+    "",
+    "KB Snippets:",
+    snippets || "(no snippets found)",
+    "",
+    "Citing rules: when a statement is supported by a specific snippet, add [#] using the 1-based index of the snippet in the search results.",
+    "If no snippet supports something, say you lack evidence rather than guessing."
+  ].join("\n");
+}
+
+// Little formatter for each KB result
+function formatSnippet(r) {
+  const title = r.title || "Untitled";
+  const sum = (r.summary || "").trim();
+  const url = r.source_url || "";
+  const area = r.area_primary || r.area_secondary || "";
+  const issue = r.issue_primary || r.issue_secondary || "";
+  const tag = r.tags || "";
+  return `• ${title}\n  ${sum}\n  Source: ${url}\n  Area/Issue: ${area} / ${issue}\n  Tags: ${tag}`;
+}
+
+// Internal call to sibling Netlify function (works locally and in prod)
+async function searchKBInternal(event, payload) {
+  const host = event.headers["x-forwarded-host"] || "localhost:8888";
+  const proto = event.headers["x-forwarded-proto"] || "http";
+  const base = `${proto}://${host}`;
+  try {
+    const res = await fetch(`${base}/.netlify/functions/knowledge-search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    if (!json || !json.ok) return [];
+    return Array.isArray(json.results) ? json.results : [];
+  } catch {
+    return [];
+  }
+}
+
+// OpenAI call — uses env OPENAI_API_KEY and optional OPENAI_MODEL
+async function callOpenAI(messages) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  if (!apiKey) {
+    // Development fallback: echo last user message with a gentle note
+    const lastUser = messages.filter(m => m.role === "user").slice(-1)[0]?.content || "";
+    return { reply: `(Dev mode) You said: ${lastUser}\n\n[No OPENAI_API_KEY set, so this is a stub reply.]`, used_messages: messages.length };
+  }
+
+  // Minimal streaming-free JSON call
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.2
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenAI error: ${res.status} ${text}`);
+  }
+
+  const data = await res.json();
+  const reply = data?.choices?.[0]?.message?.content || "";
+  return { reply, used_messages: messages.length };
 }

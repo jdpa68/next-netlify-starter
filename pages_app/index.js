@@ -1,50 +1,72 @@
 // pages_app/index.js
-// Step 11e — FIXED (Reset + redirect + minimal chat wiring)
+// Auth-aware chat guard: requires Supabase Auth session.
+// If not signed in, redirect to /login.
+// If signed in but no profile in DB yet, allow chat but show a note to complete /register.
+
 import React, { useEffect, useRef, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
 const SESSION_KEY = "lancelot_session";
-const CTX_KEY = "lancelot_ctx";           // store recent history (user/assistant)
-const PROFILE_KEY = "lancelot_profile";   // presence triggers bypass of /register redirect
+const CTX_KEY = "lancelot_ctx";
 const PREF_AREA_KEY = "lancelot_pref_area";
 
 export default function ChatPage() {
-  const [profilePresent, setProfilePresent] = useState(false);
+  const [authed, setAuthed] = useState(false);
   const [sessionId, setSessionId] = useState(null);
-  const [history, setHistory] = useState([]); // {role, content}[]
+  const [history, setHistory] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [citations, setCitations] = useState([]);
   const [evidence, setEvidence] = useState([]);
+  const [profile, setProfile] = useState(null);
   const inputRef = useRef(null);
 
-  // ---- Redirect guard: if no saved profile, send user to /register ----
+  // ---- Auth guard ----
   useEffect(() => {
-    const hasProfile = !!localStorage.getItem(PROFILE_KEY);
-    setProfilePresent(hasProfile);
-    if (!hasProfile) {
-      window.location.replace("/register");
-    }
+    supabase.auth.getSession().then(({ data }) => {
+      const s = data?.session || null;
+      if (!s) {
+        window.location.replace("/login");
+      } else {
+        setAuthed(true);
+        fetchProfile(s.user);
+      }
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      if (!s) window.location.replace("/login");
+      else { setAuthed(true); fetchProfile(s.user); }
+    });
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  // ---- Initialize sessionId and history from localStorage ----
+  async function fetchProfile(user) {
+    // Try to fetch a profile row if you have a table (optional)
+    try {
+      const { data, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("email", user.email)
+        .limit(1)
+        .maybeSingle();
+      if (!error) setProfile(data || null);
+    } catch {}
+  }
+
+  // ---- Init local session + history ----
   useEffect(() => {
     const sid = localStorage.getItem(SESSION_KEY);
     const ctxRaw = localStorage.getItem(CTX_KEY);
     setSessionId(sid || null);
-    try {
-      setHistory(ctxRaw ? JSON.parse(ctxRaw) : []);
-    } catch {
-      setHistory([]);
-    }
+    try { setHistory(ctxRaw ? JSON.parse(ctxRaw) : []); } catch { setHistory([]); }
   }, []);
 
-  // ---- Persist history to localStorage whenever it changes ----
   useEffect(() => {
     localStorage.setItem(CTX_KEY, JSON.stringify(history.slice(-10)));
   }, [history]);
 
   async function sendMessage(e) {
     e?.preventDefault?.();
+    if (!authed) return;
     const content = input.trim();
     if (!content || busy) return;
 
@@ -89,7 +111,6 @@ export default function ChatPage() {
     }
   }
 
-  // ---- Reset: clears both lancelot_ctx and lancelot_session ----
   function handleReset() {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(CTX_KEY);
@@ -99,7 +120,6 @@ export default function ChatPage() {
     setEvidence([]);
   }
 
-  // Very light UI to avoid changing the look/feel too much
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: 16 }}>
       <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -114,16 +134,20 @@ export default function ChatPage() {
         </div>
       </header>
 
-      {!profilePresent && (
+      {!authed && (
         <div style={{ padding: 8, background: "#fff3cd", border: "1px solid #ffeeba", marginBottom: 12 }}>
-          Redirecting to registration…
+          Checking your sign-in status…
+        </div>
+      )}
+
+      {authed && !profile && (
+        <div style={{ marginBottom: 12, fontSize: 12, opacity: 0.7 }}>
+          Tip: complete your <a href="/register">profile</a> so Lancelot can personalize answers.
         </div>
       )}
 
       <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, minHeight: 240 }}>
-        {history.length === 0 && (
-          <div style={{ opacity: 0.6 }}>Ask anything about enrollment, retention, or accreditation.</div>
-        )}
+        {history.length === 0 && <div style={{ opacity: 0.6 }}>Ask anything about enrollment, retention, or accreditation.</div>}
         {history.map((m, i) => (
           <div key={i} style={{ marginBottom: 10 }}>
             <div style={{ fontWeight: "bold" }}>{m.role === "user" ? "You" : "Lancelot"}</div>
@@ -139,14 +163,13 @@ export default function ChatPage() {
           onChange={(e) => setInput(e.target.value)}
           placeholder="Type your question…"
           style={{ flex: 1 }}
-          disabled={busy}
+          disabled={busy || !authed}
         />
-        <button disabled={busy || !input.trim()} type="submit">
+        <button disabled={busy || !input.trim() || !authed} type="submit">
           {busy ? "Thinking…" : "Send"}
         </button>
       </form>
 
-      {/* Evidence Drawer (simple) */}
       {citations.length > 0 && (
         <div style={{ marginTop: 16, borderTop: "1px dashed #ccc", paddingTop: 12 }}>
           <h3 style={{ marginTop: 0 }}>Evidence</h3>
@@ -165,7 +188,6 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Advanced evidence payload for debugging (collapsed look) */}
       {evidence.length > 0 && (
         <details style={{ marginTop: 8 }}>
           <summary>Debug: Raw Evidence Payload</summary>

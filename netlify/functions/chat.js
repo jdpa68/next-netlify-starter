@@ -1,12 +1,11 @@
+// ===========================================
 // netlify/functions/chat.js
-// Step 10f: Persona Tuning & Tone QA
-// - Adds a brief "tone polish" pass after generating the main reply.
-// - Keeps moderation, session recall, summarization, logging, and fallbacks.
+// Step 11c — Knowledge Base Retrieval + Citations
+// ===========================================
 
 const { createClient } = require("@supabase/supabase-js");
 const MODEL = "gpt-4o-mini";
 
-// ----------------- Helpers -----------------
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -14,242 +13,62 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   finally { clearTimeout(id); }
 }
 
-function inferFocus(text = "") {
-  const s = text.toLowerCase();
-  const has = (...w) => w.some(x => s.includes(x));
-  if (has("retention","persist","student success","advis")) return "issue_student_success";
-  if (has("accreditation","rsi","title iv","compliance","audit")) return "issue_compliance";
-  if (has("pricing","net tuition","discount","budget","aid","fafsa","pell")) return "issue_cost_pricing";
-  if (has("declin","yield","melt","pipeline","recruit","inquiry","enrollment")) return "issue_declining_enrollment";
-  if (has("quality","learning outcomes","curriculum","instruction","qm","udl")) return "issue_academic_quality";
-  return "general";
-}
-
-// --- Moderation/guardrails ---
-function checkModeration(message = "") {
-  const s = (message || "").toLowerCase();
-  if (s.length > 8000) {
-    return "That request is very long. Please share a shorter question or upload a file and tell me what you need from it.";
-  }
-  const ssn = /\b\d{3}[- ]?\d{2}[- ]?\d{4}\b/;
-  const studentIdLike = /\b(stu(dent)?[- _]?(id|number)|empl(id|oyee id))\b/;
-  const restrictedTerms = [
-    "ferpa","hipaa","phi","student record","student records",
-    "medical record","ssn ","social security","private student data"
-  ];
-  const profane = /\b(fuck|shit|bitch|asshole|idiot)\b/;
-  if (ssn.test(s)) return "I can’t process Social Security numbers or similar personal identifiers. Please remove sensitive IDs and ask again.";
-  if (studentIdLike.test(s)) return "I can’t access or discuss individual student or employee IDs. Share the scenario without identifiers and I’ll help with policy and best practice.";
-  if (restrictedTerms.some(t => s.includes(t))) return "I can’t access individual student or medical records. I can share policy guidance and campus-safe procedures if you describe the situation broadly.";
-  if (profane.test(s)) return "Let’s keep things professional. If you share your goal or challenge, I’ll suggest actionable next steps.";
-  return null;
-}
-
-function fallbackReply(ctx, message, reason) {
-  const greet = ctx.firstName
-    ? (ctx.institutionName ? `Hi ${ctx.firstName} — ${ctx.institutionName} is set.` : `Hi ${ctx.firstName}.`)
-    : "Hello there.";
-  const note = reason ? `\n\n(Quick fallback because: ${reason}.)` : "";
-  const next = "\n\nNext step: ask me another question or share a document you’d like help summarizing.";
-  return `${greet}\n\nI received your message: “${message}”.${note}${next}`;
-}
-
-async function summarizeThread(apiKey, text) {
-  const prompt = `
-Summarize the earlier parts of this higher-ed conversation into a crisp, <120-word briefing.
-Focus on user goals, constraints, and chosen directions. Plain sentences. No fluff.
-
-Conversation:
-${text}
-`;
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
-      max_tokens: 220
-    })
-  });
-  if (!res.ok) throw new Error(`Summarizer ${res.status}`);
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content?.trim() || null;
-}
-
-// --- NEW: Tone polish step (quick self-edit) ---
-async function tonePolish(apiKey, ctx, draft) {
-  if (!draft || draft.length < 20) return draft; // nothing to polish
-  const polishPrompt = `
-You are Lancelot, a higher-ed consultant. Polish the following reply to ensure it is:
-• Concise (≤ 150 words). 
-• Professional, empathetic, and clear (Jenn-style voice).
-• Includes 2–3 actionable ideas and a “next step” line.
-• No filler (avoid “As an AI…”, apologies, or hype).
-Return ONLY the improved text.
-
-Reply to polish:
-${draft}
-`;
-  try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content: polishPrompt }],
-        temperature: 0.3,
-        max_tokens: 220
-      })
-    });
-    if (!res.ok) throw new Error(`polish ${res.status}`);
-    const data = await res.json();
-    const improved = data?.choices?.[0]?.message?.content?.trim();
-    return improved?.length ? improved : draft;
-  } catch {
-    return draft; // fail-safe: keep original draft
-  }
-}
-
-// ----------------- Handler -----------------
 exports.handler = async (event) => {
   try {
-    if (event.httpMethod !== "POST") {
-      return { statusCode: 405, body: "Method Not Allowed" };
-    }
+    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
 
     const apiKey = process.env.OPENAI_API_KEY;
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
     if (!apiKey || !supabaseUrl || !supabaseServiceKey) {
-      return { statusCode: 500, body: JSON.stringify({ error: "Missing environment variables." }) };
+      return json200({ ok: false, error: "Missing environment variables." });
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
     const body = JSON.parse(event.body || "{}");
     const message = (body.message || "").trim();
     const ctx = body.ctx || {};
     let sessionId = body.sessionId || null;
 
-    if (!message) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
+    if (!message) return json200({ ok: false, error: "Missing message." });
+
+    // --- Step 1: Call knowledge-search for evidence ---
+    const prefArea = ctx.pref_area || ctx.prefArea || null;
+    const kbRes = await fetchWithTimeout(`${process.env.URL || ""}/.netlify/functions/knowledge-search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: message, pref_area: prefArea, limit: 5 })
+    }, 15000).then(r => r.json()).catch(() => ({ ok: false }));
+
+    const evidence = Array.isArray(kbRes?.results) ? kbRes.results.slice(0, 5) : [];
+
+    // Build readable evidence snippet for context
+    let evidenceText = "";
+    if (evidence.length > 0) {
+      const formatted = evidence.map((r, i) => `${i + 1}. ${r.title || "Untitled"} — ${r.summary || ""}`).join("\n");
+      evidenceText = `\nRelevant knowledge base entries:\n${formatted}\n\nUse these for factual grounding and cite them naturally in your answer.`;
+    } else {
+      evidenceText = "\n(No direct knowledge base entries found; answer based on general higher-ed best practices.)";
     }
 
-    // 10e moderation
-    const mod = checkModeration(message);
-    if (mod) {
-      if (!sessionId) {
-        const { data: newSession } = await supabase
-          .from("chat_sessions").insert({
-            user_name: ctx.firstName || null,
-            institution: ctx.institutionName || null,
-            inst_url: ctx.inst_url || null,
-            unit_id: ctx.unit_id || null
-          }).select().single();
-        sessionId = newSession?.id || null;
-      }
-      if (sessionId) {
-        await supabase.from("chat_messages").insert([
-          { session_id: sessionId, role: "user", content: message },
-          { session_id: sessionId, role: "assistant", content: mod }
-        ]);
-      }
-      return ok({ reply: mod, citations: [], sessionId });
-    }
-
-    // Persona
+    // --- Persona ---
     const persona = `
-You are **Lancelot**, the higher-education consultant built by PeerQuest.
-Your mission: help campus leaders, faculty, and staff make better decisions about enrollment, retention, finance, and academic quality.
-
-Tone:
-• Empathetic, steady, professional — never salesy.
-• Write as if you are a trusted peer in higher education.
-• Blend data-driven reasoning with coaching warmth.
-• Keep replies under ~150 words unless asked for detail.
-
-Voice:
-• Start with the user’s name if available.
-• Acknowledge their institution context.
-• Offer 2–3 actionable insights, then a helpful next step.
-• Cite or reference your Knowledge Base when possible (“According to national benchmarks…”).
-
-Compliance:
-• Never include personal student data.
-• Flag uncertainty honestly and suggest where to verify.
+You are Lancelot, the higher-education consultant built by PeerQuest.
+Use a calm, data-driven tone.
+If evidence from the Knowledge Base is available, summarize key points and cite titles naturally (e.g., “According to IPEDS Benchmark Trends…”).
+Keep answers ≤150 words, offer 2–3 actionable ideas + a next step.
 `;
 
+    // --- System context ---
     const contextLines = [
       ctx.firstName ? `User: ${ctx.firstName}` : null,
       ctx.institutionName ? `Institution: ${ctx.institutionName}` : null,
-      ctx.inst_url ? `.edu: ${ctx.inst_url}` : null,
-      ctx.unit_id ? `IPEDS ID: ${ctx.unit_id}` : null
+      ctx.org_type ? `Org type: ${ctx.org_type}` : null
     ].filter(Boolean);
-    const sessionContext = contextLines.length
-      ? `Session context → ${contextLines.join(" · ")}`
-      : "Session context → General (no school set)";
+    const sessionContext = contextLines.length ? `Session context → ${contextLines.join(" · ")}` : "";
 
-    // 1) Ensure session
-    if (!sessionId) {
-      const { data: newSession, error: insErr } = await supabase
-        .from("chat_sessions")
-        .insert({
-          user_name: ctx.firstName || null,
-          institution: ctx.institutionName || null,
-          inst_url: ctx.inst_url || null,
-          unit_id: ctx.unit_id || null
-        }).select().single();
-      if (insErr) console.error("session insert error:", insErr);
-      sessionId = newSession?.id || null;
-    } else {
-      const { error: updErr } = await supabase
-        .from("chat_sessions")
-        .update({ last_active: new Date().toISOString() })
-        .eq("id", sessionId);
-      if (updErr) console.error("session update error:", updErr);
-    }
-
-    // 2) Save user message
-    if (sessionId) {
-      const { error: msgErr } = await supabase.from("chat_messages").insert({
-        session_id: sessionId,
-        role: "user",
-        content: message
-      });
-      if (msgErr) console.error("user msg insert error:", msgErr);
-    }
-
-    // 3) Load prior history (and summarize if long)
-    let history = [];
-    if (sessionId) {
-      const { data: prior, error: histErr } = await supabase
-        .from("chat_messages")
-        .select("role, content")
-        .eq("session_id", sessionId)
-        .order("created_at", { ascending: true });
-      if (histErr) console.error("history select error:", histErr);
-
-      const items = prior || [];
-      const tail = items.slice(-10).map(m => ({ role: m.role, content: m.content }));
-      history = tail;
-
-      if (items.length > 12) {
-        const earlier = items.slice(0, -10).map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n");
-        try {
-          const summary = await summarizeThread(apiKey, earlier);
-          if (summary) history = [{ role: "system", content: `Thread summary:\n${summary}` }, ...history];
-        } catch (e) {
-          console.error("summary error:", e);
-        }
-      }
-    }
-
-    const focusTag = ctx.pref_area || inferFocus(`${message}`);
-
-    // 4) Main model call
-    let draft = "";
+    // --- Step 2: Main model call ---
+    let replyText = "";
     try {
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -262,8 +81,7 @@ Compliance:
           messages: [
             { role: "system", content: persona.trim() },
             { role: "system", content: sessionContext },
-            { role: "system", content: `Focus hint: ${focusTag}` },
-            ...history,
+            { role: "system", content: evidenceText },
             { role: "user", content: message }
           ],
           temperature: 0.4,
@@ -271,57 +89,45 @@ Compliance:
         })
       }, 25000);
 
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`OpenAI ${res.status}: ${txt.slice(0, 200)}`);
-      }
-
+      if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      draft = data?.choices?.[0]?.message?.content?.trim() || "";
+      replyText = data?.choices?.[0]?.message?.content?.trim() || "No reply.";
     } catch (err) {
-      console.error("OpenAI error:", err);
-      draft = fallbackReply(ctx, message, "temporary model issue");
+      console.error("OpenAI call failed:", err);
+      replyText = "I hit a temporary issue reaching the model. Please try again.";
     }
 
-    // 5) NEW: Tone polish pass (fail-safe)
-    let finalReply = draft;
+    // --- Step 3: Save assistant reply (optional logging) ---
     try {
-      finalReply = await tonePolish(apiKey, ctx, draft);
-    } catch {
-      finalReply = draft; // never break UI
+      if (sessionId) {
+        await supabase.from("chat_messages").insert({
+          session_id: sessionId,
+          role: "assistant",
+          content: replyText
+        });
+      }
+    } catch (e) {
+      console.warn("logging skipped:", e.message);
     }
 
-    // 6) Save assistant reply
-    if (sessionId) {
-      const { error: asstErr } = await supabase.from("chat_messages").insert({
-        session_id: sessionId,
-        role: "assistant",
-        content: finalReply
-      });
-      if (asstErr) console.error("assistant msg insert error:", asstErr);
-    }
+    // --- Step 4: Return reply + citations ---
+    const citations = evidence.map((r) => ({
+      title: r.title,
+      source_url: r.source_url
+    }));
 
-    // 7) Return to UI
-    return ok({
-      reply: finalReply,
-      citations: [],
-      sessionId
-    });
+    return json200({ ok: true, reply: replyText, citations, sessionId });
   } catch (err) {
     console.error("chat handler error:", err);
-    return ok({
-      reply: "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
-      citations: [],
-      sessionId: null
-    });
+    return json200({ ok: false, error: "Server error." });
   }
 };
 
-// --------------- tiny util ---------------
-function ok(payload) {
+// --- Helper ---
+function json200(payload) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ok: true, ...payload })
+    body: JSON.stringify(payload)
   };
 }

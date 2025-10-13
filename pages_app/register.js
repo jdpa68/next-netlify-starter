@@ -1,12 +1,6 @@
 // ===========================================
-// Lancelot — Registration / Sign-in
+// Lancelot — Registration / Sign-in (Polished Autocomplete)
 // Route: /register
-// • Full name, email
-// • US-accredited? (Yes/No)
-//   – Yes: school searchable dropdown (ipeds_schools)
-//   – No: organization + org type
-// • On submit → POST /.netlify/functions/register-user
-// • Save session context → redirect to "/"
 // ===========================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +11,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-// Brand tokens (same palette you’re using)
+// Brand tokens (same palette)
 const BRAND = {
   primary: "#040D2C",
   accent: "#C2AA80",
@@ -48,18 +42,19 @@ function firstNameFrom(full) {
   return s.split(/\s+/)[0];
 }
 
+// ----------- Component -----------
 export default function RegisterPage() {
   // Form state
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [isUSAccredited, setIsUSAccredited] = useState(null); // true | false | null
 
-  // School search (if yes)
+  // School search state (when isUSAccredited === true)
   const [schoolQuery, setSchoolQuery] = useState("");
   const [schoolResults, setSchoolResults] = useState([]);
   const [selectedSchool, setSelectedSchool] = useState(null); // { unit_id, name, state, city }
 
-  // Org (if no)
+  // Org (when isUSAccredited === false)
   const [orgName, setOrgName] = useState("");
   const [orgType, setOrgType] = useState("investor");
 
@@ -68,36 +63,58 @@ export default function RegisterPage() {
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
 
-  // Debounced search
+  // Dropdown UX
+  const [openList, setOpenList] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(-1);
+  const dropdownRef = useRef(null);
+  const inputRef = useRef(null);
   const searchTimer = useRef(null);
+
+  // Close dropdown on outside click
   useEffect(() => {
-    if (isUSAccredited !== true) return; // only when Yes
-    if (!schoolQuery || schoolQuery.trim().length < 2) {
+    function handleClickOutside(e) {
+      if (!dropdownRef.current) return;
+      if (!dropdownRef.current.contains(e.target) && !inputRef.current?.contains(e.target)) {
+        setOpenList(false);
+        setHighlightIndex(-1);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Debounced search (min length: 3)
+  useEffect(() => {
+    if (isUSAccredited !== true) return;
+    if (!schoolQuery || schoolQuery.trim().length < 3) {
       setSchoolResults([]);
       return;
     }
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(async () => {
       try {
-        // Simple ilike search; limit 10
+        const q = schoolQuery.trim();
         const { data, error } = await supabase
           .from("ipeds_schools")
           .select("unit_id, name, city, state")
-          .ilike("name", `%${schoolQuery.trim()}%`)
+          .ilike("name", `%${q}%`)
           .order("name", { ascending: true })
           .limit(10);
         if (error) throw error;
         setSchoolResults(data || []);
+        setOpenList(true);
+        setHighlightIndex(-1);
       } catch (e) {
         setSchoolResults([]);
+        setOpenList(false);
       }
     }, 250);
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [schoolQuery, isUSAccredited]);
 
-  // Display helpers
+  // Helpers
   const schoolLabel = (row) => {
-    if (!row) return "Select your institution…";
+    if (!row) return "";
     const st = row.state ? ` (${row.state})` : "";
     const city = row.city ? ` — ${row.city}` : "";
     return `${row.name}${st}${city}`;
@@ -105,14 +122,50 @@ export default function RegisterPage() {
 
   const canSubmit = useMemo(() => {
     if (!fullName.trim() || !email.trim()) return false;
-    if (isUSAccredited === true) {
-      return !!selectedSchool;
-    }
-    if (isUSAccredited === false) {
-      return !!orgName.trim() && !!orgType;
-    }
+    if (isUSAccredited === true) return !!selectedSchool;
+    if (isUSAccredited === false) return !!orgName.trim() && !!orgType;
     return false;
   }, [fullName, email, isUSAccredited, selectedSchool, orgName, orgType]);
+
+  // Keyboard navigation for dropdown
+  const onKeyDown = (e) => {
+    if (!openList) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightIndex((i) => Math.min(i + 1, schoolResults.length)); // includes "not listed" row
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightIndex((i) => Math.max(i - 1, -1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      // choose highlighted item
+      if (highlightIndex >= 0 && highlightIndex < schoolResults.length) {
+        onSelectSchool(schoolResults[highlightIndex]);
+      } else if (highlightIndex === schoolResults.length) {
+        onChooseNotListed();
+      }
+    } else if (e.key === "Escape") {
+      setOpenList(false);
+      setHighlightIndex(-1);
+    }
+  };
+
+  // Selection handlers
+  const onSelectSchool = (row) => {
+    setSelectedSchool(row);
+    setSchoolQuery(schoolLabel(row));
+    setOpenList(false);
+    setHighlightIndex(-1);
+  };
+  const onChooseNotListed = () => {
+    setSelectedSchool(null);
+    setOpenList(false);
+    setHighlightIndex(-1);
+    // switch to non-school flow quickly:
+    setIsUSAccredited(false);
+    setOrgName("");
+    setOrgType("company");
+  };
 
   const onSubmit = async (e) => {
     e?.preventDefault?.();
@@ -121,7 +174,6 @@ export default function RegisterPage() {
 
     setBusy(true);
     try {
-      // Prepare payload for server function
       let payload = {
         full_name: fullName.trim(),
         email: email.trim(),
@@ -133,7 +185,6 @@ export default function RegisterPage() {
         city: isUSAccredited ? (selectedSchool?.city || null) : null
       };
 
-      // Post to secure function (service role)
       const res = await fetch("/.netlify/functions/register-user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -144,7 +195,7 @@ export default function RegisterPage() {
         throw new Error(data?.error || "Registration failed. Please try again.");
       }
 
-      // Save session context for the chat UI
+      // Save session context for chat
       const ctx = {
         firstName: firstNameFrom(fullName),
         email: payload.email,
@@ -153,10 +204,8 @@ export default function RegisterPage() {
         org_type: payload.org_type
       };
       saveCtx(ctx);
-      // reset sessionId to start a fresh conversation
-      saveSessionId(null);
+      saveSessionId(null); // start fresh
 
-      // Redirect to the chat
       if (typeof window !== "undefined") window.location.href = "/";
     } catch (err) {
       setError(err.message || "Registration error.");
@@ -165,6 +214,7 @@ export default function RegisterPage() {
     }
   };
 
+  // ----------- Render -----------
   return (
     <div className="min-h-screen" style={{ backgroundColor: BRAND.primary, color: BRAND.white }}>
       <header className="w-full border-b border-white/15">
@@ -208,7 +258,7 @@ export default function RegisterPage() {
                   <input
                     type="radio"
                     checked={isUSAccredited === true}
-                    onChange={() => { setIsUSAccredited(true); setSelectedSchool(null); setOrgName(""); }}
+                    onChange={() => { setIsUSAccredited(true); setSelectedSchool(null); setOrgName(""); setSchoolQuery(""); setOpenList(false); }}
                   />
                   <span>Yes</span>
                 </label>
@@ -216,42 +266,98 @@ export default function RegisterPage() {
                   <input
                     type="radio"
                     checked={isUSAccredited === false}
-                    onChange={() => { setIsUSAccredited(false); setSchoolQuery(""); setSelectedSchool(null); }}
+                    onChange={() => { setIsUSAccredited(false); setSchoolQuery(""); setSelectedSchool(null); setOpenList(false); }}
                   />
                   <span>No</span>
                 </label>
               </div>
             </div>
 
+            {/* School path */}
             {isUSAccredited === true && (
-              <div className="space-y-2">
+              <div className="space-y-2" ref={dropdownRef}>
                 <div className="text-sm text-gray-700">Institution</div>
                 <input
+                  ref={inputRef}
                   type="text"
                   value={selectedSchool ? schoolLabel(selectedSchool) : schoolQuery}
                   onChange={(e) => { setSelectedSchool(null); setSchoolQuery(e.target.value); }}
-                  placeholder="Start typing your institution name…"
+                  onFocus={() => { if (schoolResults.length > 0) setOpenList(true); }}
+                  onKeyDown={onKeyDown}
+                  placeholder="Start typing your institution name (min 3 letters)…"
                   className="rounded-xl border px-3 py-2"
                   style={{ borderColor: "rgba(4,13,44,0.20)" }}
                 />
-                {/* Results */}
-                {(!selectedSchool && schoolResults.length > 0) && (
-                  <div className="rounded-xl border bg-white" style={{ borderColor: "rgba(4,13,44,0.20)" }}>
-                    {schoolResults.map((row) => (
+
+                {/* Dropdown */}
+                {openList && !selectedSchool && (
+                  <div
+                    className="mt-1 rounded-xl shadow-lg border bg-white"
+                    style={{
+                      borderColor: "rgba(4,13,44,0.20)",
+                      maxHeight: "260px",
+                      overflowY: "auto"
+                    }}
+                  >
+                    {/* Loading/empty states */}
+                    {schoolQuery.trim().length < 3 && (
+                      <div className="px-3 py-2 text-sm text-gray-600">Type at least 3 letters…</div>
+                    )}
+
+                    {schoolQuery.trim().length >= 3 && schoolResults.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-600">No results — try city or state.</div>
+                    )}
+
+                    {/* Results */}
+                    {schoolResults.map((row, idx) => (
                       <button
                         key={row.unit_id}
                         type="button"
-                        onClick={() => { setSelectedSchool(row); setSchoolResults([]); }}
+                        onClick={() => onSelectSchool(row)}
                         className="w-full text-left px-3 py-2 hover:bg-gray-50"
+                        style={{
+                          background: highlightIndex === idx ? "#F3F4F6" : "transparent"
+                        }}
+                        onMouseEnter={() => setHighlightIndex(idx)}
                       >
-                        {schoolLabel(row)}
+                        <span className="font-medium">{row.name}</span>
+                        {row.state ? <span> ({row.state})</span> : null}
+                        {row.city ? <span> — {row.city}</span> : null}
                       </button>
                     ))}
+
+                    {/* Not listed option */}
+                    {schoolQuery.trim().length >= 3 && (
+                      <button
+                        type="button"
+                        onClick={onChooseNotListed}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-50 border-t text-sm"
+                        style={{ borderColor: "rgba(4,13,44,0.10)", background: highlightIndex === schoolResults.length ? "#F3F4F6" : "transparent" }}
+                        onMouseEnter={() => setHighlightIndex(schoolResults.length)}
+                      >
+                        My school isn’t listed — continue with organization instead
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* After selection */}
+                {selectedSchool && (
+                  <div className="text-xs text-gray-600">
+                    Selected: <span className="font-medium">{schoolLabel(selectedSchool)}</span>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedSchool(null); setSchoolQuery(""); setOpenList(false); inputRef.current?.focus(); }}
+                      className="ml-2 underline"
+                    >
+                      Change
+                    </button>
                   </div>
                 )}
               </div>
             )}
 
+            {/* Non-school path */}
             {isUSAccredited === false && (
               <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1">

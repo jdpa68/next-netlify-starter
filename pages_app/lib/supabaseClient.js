@@ -1,5 +1,5 @@
-// lib/supabaseClient.js  (TEMP SHIM so existing imports don't break)
-// This duplicates the client so both '../lib/supabaseClient' and './lib/supabaseClient' imports work.
+// pages/lib/supabaseClient.js  (Shim for imports from files under /pages)
+// Mirrors the root lib client so imports like '../lib/supabaseClient' from /pages/* work.
 import { createClient } from "@supabase/supabase-js";
 
 export const supabase = createClient(

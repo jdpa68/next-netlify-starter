@@ -1,297 +1,177 @@
-// ===========================================
-// Lancelot — Chat Interface (Main Page)
-// With: Recent questions panel + Evidence drawer
-// ===========================================
+// pages_app/index.js
+// Step 11e — FIXED (Reset + redirect + minimal chat wiring)
+import React, { useEffect, useRef, useState } from "react";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
-
-const BRAND = {
-  primary: "#040D2C",
-  accent: "#C2AA80",
-  white: "#FFFFFF",
-  title: "Lancelot",
-  tagline: "The trusted assistant for every higher-ed professional."
-};
-
-const LS_CTX = "lancelot_ctx";
-const LS_SESSION = "lancelot_session";
-
-// helpers
-function saveSessionId(id) {
-  try {
-    if (typeof window !== "undefined") {
-      if (id) localStorage.setItem(LS_SESSION, id);
-      else localStorage.removeItem(LS_SESSION);
-    }
-  } catch {}
-}
-function loadCtx() {
-  try {
-    const raw = typeof window !== "undefined" && localStorage.getItem(LS_CTX);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-function loadSession() {
-  try {
-    return typeof window !== "undefined" && localStorage.getItem(LS_SESSION);
-  } catch { return null; }
-}
+const SESSION_KEY = "lancelot_session";
+const CTX_KEY = "lancelot_ctx";           // store recent history (user/assistant)
+const PROFILE_KEY = "lancelot_profile";   // presence triggers bypass of /register redirect
+const PREF_AREA_KEY = "lancelot_pref_area";
 
 export default function ChatPage() {
-  // session & context
-  const [ctx, setCtx] = useState(null);
+  const [profilePresent, setProfilePresent] = useState(false);
   const [sessionId, setSessionId] = useState(null);
-
-  // chat
-  const [question, setQuestion] = useState("");
+  const [history, setHistory] = useState([]); // {role, content}[]
+  const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-
-  // typewriter
-  const [displayed, setDisplayed] = useState("");
-  const [speed, setSpeed] = useState("normal");
-  const prerollRef = useRef(null);
-  const timerRef = useRef(null);
-
-  // recent questions (this session)
-  const [recent, setRecent] = useState([]);
-
-  // citations
   const [citations, setCitations] = useState([]);
-  const [showCites, setShowCites] = useState(false);
+  const [evidence, setEvidence] = useState([]);
+  const inputRef = useRef(null);
 
-  // load context & session
+  // ---- Redirect guard: if no saved profile, send user to /register ----
   useEffect(() => {
-    setCtx(loadCtx());
-    setSessionId(loadSession());
+    const hasProfile = !!localStorage.getItem(PROFILE_KEY);
+    setProfilePresent(hasProfile);
+    if (!hasProfile) {
+      window.location.replace("/register");
+    }
   }, []);
 
-  // load recent for current session
+  // ---- Initialize sessionId and history from localStorage ----
   useEffect(() => {
-    (async () => {
-      if (!sessionId) { setRecent([]); return; }
-      try {
-        const { data, error } = await supabase
-          .from("chat_messages")
-          .select("content, created_at")
-          .eq("session_id", sessionId)
-          .eq("role", "user")
-          .order("created_at", { ascending: false })
-          .limit(5);
-        if (error) throw error;
-        setRecent((data || []).map(r => ({ text: r.content, ts: r.created_at })));
-      } catch {
-        setRecent([]);
-      }
-    })();
-  }, [sessionId]);
+    const sid = localStorage.getItem(SESSION_KEY);
+    const ctxRaw = localStorage.getItem(CTX_KEY);
+    setSessionId(sid || null);
+    try {
+      setHistory(ctxRaw ? JSON.parse(ctxRaw) : []);
+    } catch {
+      setHistory([]);
+    }
+  }, []);
 
-  // typewriter helpers
-  const clearTyping = () => {
-    if (prerollRef.current) clearTimeout(prerollRef.current);
-    if (timerRef.current) clearInterval(timerRef.current);
-  };
-  const startTyping = (full) => {
-    clearTyping();
-    setDisplayed("");
-    const words = String(full || "").split(/\s+/);
-    let idx = 0;
-    prerollRef.current = setTimeout(() => {
-      const ms = speed === "fast" ? 18 : 35;
-      timerRef.current = setInterval(() => {
-        if (idx >= words.length) { clearTyping(); return; }
-        setDisplayed(prev => prev + (prev ? " " : "") + words[idx++]);
-      }, ms);
-    }, 350);
-  };
+  // ---- Persist history to localStorage whenever it changes ----
+  useEffect(() => {
+    localStorage.setItem(CTX_KEY, JSON.stringify(history.slice(-10)));
+  }, [history]);
 
-  // ask
-  const onAsk = async (e) => {
+  async function sendMessage(e) {
     e?.preventDefault?.();
-    const q = (question || "").trim();
-    if (!q) return;
+    const content = input.trim();
+    if (!content || busy) return;
 
+    const prefArea = (localStorage.getItem(PREF_AREA_KEY) || "").trim();
+    const nextHistory = [...history, { role: "user", content }];
+    setHistory(nextHistory);
+    setInput("");
     setBusy(true);
-    setDisplayed("");
     setCitations([]);
-    setShowCites(false);
+    setEvidence([]);
 
     try {
       const res = await fetch("/.netlify/functions/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: q,
-          ctx,
-          sessionId
+          message: content,
+          sessionId: sessionId || undefined,
+          history: nextHistory.slice(-10),
+          pref_area: prefArea
         })
       });
-      const data = await res.json().catch(() => ({}));
-
-      // sessionId update from server
-      if (data?.sessionId && data.sessionId !== sessionId) {
-        setSessionId(data.sessionId);
-        saveSessionId(data.sessionId);
+      const json = await res.json();
+      if (json && json.ok) {
+        if (json.sessionId && json.sessionId !== sessionId) {
+          setSessionId(json.sessionId);
+          localStorage.setItem(SESSION_KEY, json.sessionId);
+        }
+        const reply = (json.reply || "").toString();
+        setHistory(h => [...h, { role: "assistant", content: reply }]);
+        setCitations(Array.isArray(json.citations) ? json.citations : []);
+        setEvidence(Array.isArray(json.evidence) ? json.evidence : []);
+      } else {
+        const err = (json && json.error) || "Chat failed.";
+        setHistory(h => [...h, { role: "assistant", content: `⚠️ ${err}` }]);
       }
-
-      // optimistic add to recent
-      setRecent(prev => [{ text: q, ts: new Date().toISOString() }, ...prev].slice(0, 5));
-
-      const reply = data?.reply || "I couldn’t generate a response just now.";
-      startTyping(reply);
-
-      // citations
-      setCitations(Array.isArray(data?.citations) ? data.citations.filter(c => c?.title) : []);
-    } catch {
-      setDisplayed("Error: could not reach chat function.");
-      setCitations([]);
+    } catch (err) {
+      setHistory(h => [...h, { role: "assistant", content: "⚠️ Network error." }]);
     } finally {
       setBusy(false);
+      inputRef.current?.focus?.();
     }
-  };
+  }
 
-  // tiny utils
-  const short = (s) => (s.length > 80 ? s.slice(0, 77) + "…" : s);
-  const hasRecent = useMemo(() => Array.isArray(recent) && recent.length > 0, [recent]);
-  const hasCitations = useMemo(() => Array.isArray(citations) && citations.length > 0, [citations]);
+  // ---- Reset: clears both lancelot_ctx and lancelot_session ----
+  function handleReset() {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(CTX_KEY);
+    setSessionId(null);
+    setHistory([]);
+    setCitations([]);
+    setEvidence([]);
+  }
 
+  // Very light UI to avoid changing the look/feel too much
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: BRAND.primary, color: BRAND.white }}>
-      {/* Header */}
-      <header className="w-full border-b border-white/15">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-            <div className="text-xl md:text-2xl font-semibold">{BRAND.title}</div>
-            <div className="text-xs opacity-80">{BRAND.tagline}</div>
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span className="opacity-70">Beta</span>
-            <a href="/account" className="underline opacity-90 hover:opacity-100 transition" title="View or update your account">
-              Account
-            </a>
-          </div>
+    <div style={{ maxWidth: 760, margin: "0 auto", padding: 16 }}>
+      <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <h1 style={{ margin: 0, fontSize: 22 }}>Lancelot</h1>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button onClick={handleReset} title="Reset conversation (clears memory + session)">
+            Reset
+          </button>
+          <a href="/account" style={{ textDecoration: "none" }}>
+            <button title="Go to your Library/Account">Account</button>
+          </a>
         </div>
       </header>
 
-      {/* Main */}
-      <main className="flex-grow px-6">
-        <div className="max-w-2xl mx-auto py-6">
-          <div className="bg-white text-black rounded-2xl shadow-lg p-6">
-            <h1 className="text-lg font-semibold mb-2 text-center" style={{ color: BRAND.primary }}>
-              {ctx?.firstName ? `Hi ${ctx.firstName}.` : "Hi there."}
-            </h1>
-            <p className="text-sm text-gray-600 mb-4 text-center">
-              Ask about enrollment, retention, accreditation, finance, or marketing. I’ll answer with citations.
-            </p>
+      {!profilePresent && (
+        <div style={{ padding: 8, background: "#fff3cd", border: "1px solid #ffeeba", marginBottom: 12 }}>
+          Redirecting to registration…
+        </div>
+      )}
 
-            {/* Ask */}
-            <form onSubmit={onAsk} className="flex gap-2 mb-3">
-              <input
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask Lancelot… e.g., ‘How can we improve online enrollment?’"
-                className="flex-grow rounded-xl border border-gray-300 px-3 py-2 text-sm"
-              />
-              <button
-                type="submit"
-                disabled={busy}
-                className="rounded-xl px-4 py-2 text-sm font-medium"
-                style={{ backgroundColor: BRAND.accent, color: BRAND.primary, opacity: busy ? 0.6 : 1 }}
-              >
-                {busy ? "Thinking…" : "Ask"}
-              </button>
-            </form>
+      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, minHeight: 240 }}>
+        {history.length === 0 && (
+          <div style={{ opacity: 0.6 }}>Ask anything about enrollment, retention, or accreditation.</div>
+        )}
+        {history.map((m, i) => (
+          <div key={i} style={{ marginBottom: 10 }}>
+            <div style={{ fontWeight: "bold" }}>{m.role === "user" ? "You" : "Lancelot"}</div>
+            <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+          </div>
+        ))}
+      </section>
 
-            {/* Speed */}
-            <div className="flex gap-2 text-xs text-gray-700 mb-4">
-              <span className="font-medium">Speed:</span>
-              <button
-                onClick={() => setSpeed("normal")}
-                className={`px-2 py-1 rounded-lg ${speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
-              >
-                Normal
-              </button>
-              <button
-                onClick={() => setSpeed("fast")}
-                className={`px-2 py-1 rounded-lg ${speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
-              >
-                Fast
-              </button>
-            </div>
+      <form onSubmit={sendMessage} style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Type your question…"
+          style={{ flex: 1 }}
+          disabled={busy}
+        />
+        <button disabled={busy || !input.trim()} type="submit">
+          {busy ? "Thinking…" : "Send"}
+        </button>
+      </form>
 
-            {/* Answer */}
-            <div className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
-              {displayed || "Your answer will appear here."}
-            </div>
-
-            {/* Evidence drawer */}
-            {hasCitations && (
-              <div className="mt-3">
-                <button
-                  type="button"
-                  onClick={() => setShowCites(v => !v)}
-                  className="text-xs underline"
-                >
-                  {showCites ? "Hide Evidence" : "Show Evidence"}
-                </button>
-
-                {showCites && (
-                  <div className="mt-2 rounded-xl border border-gray-200 bg-white">
-                    <ul className="divide-y divide-gray-200">
-                      {citations.map((c, idx) => (
-                        <li key={idx} className="px-3 py-2 text-sm">
-                          <div className="font-medium">{c.title || "Untitled"}</div>
-                          {c.source_url ? (
-                            <a
-                              href={c.source_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs underline text-gray-700"
-                            >
-                              {c.source_url}
-                            </a>
-                          ) : (
-                            <div className="text-xs text-gray-500">No external link</div>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
+      {/* Evidence Drawer (simple) */}
+      {citations.length > 0 && (
+        <div style={{ marginTop: 16, borderTop: "1px dashed #ccc", paddingTop: 12 }}>
+          <h3 style={{ marginTop: 0 }}>Evidence</h3>
+          <ol>
+            {citations.map((c, idx) => (
+              <li key={c.id || idx}>
+                <div style={{ fontWeight: 500 }}>{c.title || "Untitled"}</div>
+                {c.url && (
+                  <div>
+                    <a href={c.url} target="_blank" rel="noreferrer">{c.url}</a>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Recent panel */}
-            {hasRecent && (
-              <div className="mt-4">
-                <div className="text-xs font-semibold text-gray-600 mb-1">Recent in this conversation</div>
-                <div className="rounded-2xl border border-gray-200 bg-white">
-                  {recent.map((r, idx) => (
-                    <button
-                      type="button"
-                      key={idx}
-                      onClick={() => setQuestion(r.text)}
-                      className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
-                    >
-                      {short(r.text)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+              </li>
+            ))}
+          </ol>
         </div>
-      </main>
+      )}
 
-      {/* Footer */}
-      <footer className="text-center text-xs py-4 opacity-70">
-        Beta — not legal/financial advice. Sources may include internal summaries and public documents.
-      </footer>
+      {/* Advanced evidence payload for debugging (collapsed look) */}
+      {evidence.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary>Debug: Raw Evidence Payload</summary>
+          <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(evidence, null, 2)}</pre>
+        </details>
+      )}
     </div>
   );
 }

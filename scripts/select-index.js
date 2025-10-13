@@ -1,6 +1,6 @@
 // scripts/select-index.js
 // Copies working pages from /pages_app to /pages before Netlify build.
-// Ensures both index.js and register.js exist in the final build.
+// Ensures index.js, register.js, and account.js exist in the final build.
 
 const fs = require("fs");
 const path = require("path");
@@ -15,7 +15,7 @@ if (!fs.existsSync(destDir)) {
 }
 
 // Files we want available at runtime
-const filesToCopy = ["index.js", "register.js"];
+const filesToCopy = ["index.js", "register.js", "account.js"];
 
 for (const file of filesToCopy) {
   const src = path.join(srcDir, file);

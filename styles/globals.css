@@ -1,64 +1,28 @@
-html,
-body {
-  background-color: #f8fafc;
-  padding: 0;
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell,
-    Fira Sans, Droid Sans, Helvetica Neue, sans-serif;
-}
+/* Tailwind layers */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-* {
-  box-sizing: border-box;
-}
-
-main {
-  padding: 5rem 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-}
-
-code {
-  background: #e2e8f0;
-  border-radius: 5px;
-  padding: 0.75rem;
-  font-family: Menlo, Monaco, Lucida Console, Courier New, monospace;
-}
-
-.container {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-}
-
-/* 9.4d-1 — Global type & spacing tune */
+/* Base app styling (minimal, safe) */
 html, body {
-  font-size: 16px;
-  line-height: 1.6;
-  -webkit-text-size-adjust: 100%;
+  height: 100%;
 }
 
-/* 9.4d-2 — Header and Card Spacing */
-header {
-  padding-top: 1.2rem;
-  padding-bottom: 1.2rem;
+body {
+  background-color: #040D2C; /* brand primary */
+  color: #111;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-main section {
-  padding: 1.25rem 1.5rem;
-  border-radius: 1rem;
+/* Optional: smooth dropdown scrolling */
+.dropdown-panel {
+  max-height: 260px;
+  overflow-y: auto;
 }
 
-/* 9.4d-3 — Text alignment & footer margin */
-h1, h2, h3, p {
-  margin-bottom: 0.75rem;
-}
+/* Optional: keep links neat on dark header */
+a { color: inherit; }
 
-footer, .footer-note {
-  margin-top: 1.5rem;
-  text-align: center;
-}
+/* You can add any additional overrides below */

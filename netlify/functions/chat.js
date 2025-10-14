@@ -1,7 +1,6 @@
 // netlify/functions/chat.js
-// Step 10f: Persona Tuning & Tone QA
-// - Adds a brief "tone polish" pass after generating the main reply.
-// - Keeps moderation, session recall, summarization, logging, and fallbacks.
+// Step 11e — Restored KB wiring + Tone QA (keeps your 10-14 structure)
+// Returns both { reply, text } so the current UI works without changes.
 
 const { createClient } = require("@supabase/supabase-js");
 const MODEL = "gpt-4o-mini";
@@ -79,7 +78,7 @@ ${text}
 
 // --- NEW: Tone polish step (quick self-edit) ---
 async function tonePolish(apiKey, ctx, draft) {
-  if (!draft || draft.length < 20) return draft; // nothing to polish
+  if (!draft || draft.length < 20) return draft;
   const polishPrompt = `
 You are Lancelot, a higher-ed consultant. Polish the following reply to ensure it is:
 • Concise (≤ 150 words). 
@@ -107,7 +106,7 @@ ${draft}
     const improved = data?.choices?.[0]?.message?.content?.trim();
     return improved?.length ? improved : draft;
   } catch {
-    return draft; // fail-safe: keep original draft
+    return draft; // fail-safe
   }
 }
 
@@ -132,7 +131,6 @@ exports.handler = async (event) => {
     const message = (body.message || "").trim();
     const ctx = body.ctx || {};
     let sessionId = body.sessionId || null;
-
     if (!message) {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing message" }) };
     }
@@ -156,10 +154,10 @@ exports.handler = async (event) => {
           { session_id: sessionId, role: "assistant", content: mod }
         ]);
       }
-      return ok({ reply: mod, citations: [], sessionId });
+      return ok({ reply: mod, text: mod, citations: [], sessionId });
     }
 
-    // Persona
+    // Persona (unchanged)
     const persona = `
 You are **Lancelot**, the higher-education consultant built by PeerQuest.
 Your mission: help campus leaders, faculty, and staff make better decisions about enrollment, retention, finance, and academic quality.
@@ -190,6 +188,29 @@ Compliance:
     const sessionContext = contextLines.length
       ? `Session context → ${contextLines.join(" · ")}`
       : "Session context → General (no school set)";
+
+    // --- NEW: Restore KB search (fetch internal function) ---
+    const focusTag = ctx.pref_area || inferFocus(`${message}`);
+    let kbResults = [];
+    try {
+      const kbRes = await fetchWithTimeout(`${process.env.URL || ""}/.netlify/functions/knowledge-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ q: message, pref_area: focusTag, limit: 5 })
+      }, 15000).then(r => r.json());
+      kbResults = Array.isArray(kbRes?.results) ? kbRes.results.slice(0, 5) : [];
+    } catch {
+      kbResults = [];
+    }
+
+    const evidenceText = kbResults.length
+      ? kbResults.map((r, i) => `${i + 1}. ${r.title || "Untitled"} — ${r.summary || ""}`).join("\n")
+      : "(No direct knowledge base entries found; use best higher-ed practice.)";
+
+    const citations = kbResults.map(r => ({
+      title: r.title,
+      source_url: r.source_url
+    }));
 
     // 1) Ensure session
     if (!sessionId) {
@@ -246,9 +267,7 @@ Compliance:
       }
     }
 
-    const focusTag = ctx.pref_area || inferFocus(`${message}`);
-
-    // 4) Main model call
+    // 4) Main model call with KB injected
     let draft = "";
     try {
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
@@ -263,6 +282,7 @@ Compliance:
             { role: "system", content: persona.trim() },
             { role: "system", content: sessionContext },
             { role: "system", content: `Focus hint: ${focusTag}` },
+            { role: "system", content: `Knowledge Base Insights:\n${evidenceText}` }, // <— restored
             ...history,
             { role: "user", content: message }
           ],
@@ -283,12 +303,12 @@ Compliance:
       draft = fallbackReply(ctx, message, "temporary model issue");
     }
 
-    // 5) NEW: Tone polish pass (fail-safe)
+    // 5) Tone polish pass (fail-safe)
     let finalReply = draft;
     try {
       finalReply = await tonePolish(apiKey, ctx, draft);
     } catch {
-      finalReply = draft; // never break UI
+      finalReply = draft;
     }
 
     // 6) Save assistant reply
@@ -301,16 +321,18 @@ Compliance:
       if (asstErr) console.error("assistant msg insert error:", asstErr);
     }
 
-    // 7) Return to UI
+    // 7) Return (both reply and text for current UI)
     return ok({
       reply: finalReply,
-      citations: [],
+      text: finalReply,      // <— for today’s UI which reads data.text
+      citations,             // <— Evidence drawer can use this
       sessionId
     });
   } catch (err) {
     console.error("chat handler error:", err);
     return ok({
       reply: "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
+      text: "I hit an unexpected issue just now, but I’m still here. Ask again in a moment.",
       citations: [],
       sessionId: null
     });

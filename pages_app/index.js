@@ -1,176 +1,152 @@
-// pages_app/index.js
-// Chat page with "Sign Out" in the header and "Reset Chat" beside Speed.
-//
-// • Sign Out appears next to Account and links to /logout (clears session, returns to /login)
-// • Reset Chat clears only the conversation history (keeps your profile/org info)
+// ===========================================
+// Lancelot — Chat Interface (Main Page)
+// ===========================================
 
-import React, { useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
+
+const BRAND = {
+  primary: "#040D2C",
+  accent: "#C2AA80",
+  white: "#FFFFFF",
+  title: "Lancelot",
+  tagline: "The trusted assistant for every higher-ed professional."
+};
+
+// Local storage key for user context
+const LS_CTX = "lancelot_ctx";
 
 export default function ChatPage() {
-  const [history, setHistory] = useState([]);
-  const [input, setInput] = useState("");
+  const [ctx, setCtx] = useState(null);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
-  const [citations, setCitations] = useState([]);
-  const [evidence, setEvidence] = useState([]);
-  const [speed, setSpeed] = useState("Normal");
-  const inputRef = useRef(null);
+  const [speed, setSpeed] = useState("normal"); // "normal" or "fast"
 
-  async function sendMessage(e) {
-    e?.preventDefault?.();
-    const content = input.trim();
-    if (!content || busy) return;
+  // Load local context
+  useEffect(() => {
+    try {
+      const raw = typeof window !== "undefined" && localStorage.getItem(LS_CTX);
+      if (raw) setCtx(JSON.parse(raw));
+    } catch {
+      setCtx(null);
+    }
+  }, []);
 
-    const nextHistory = [...history, { role: "user", content }];
-    setHistory(nextHistory);
-    setInput("");
+  const handleAsk = async (e) => {
+    e.preventDefault?.();
+    if (!question.trim()) return;
     setBusy(true);
-    setCitations([]);
-    setEvidence([]);
-
+    setAnswer("");
     try {
       const res = await fetch("/.netlify/functions/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: content,
-          history: nextHistory.slice(-10),
-          // (optional) include speed hint if your function uses it
-          speed: speed.toLowerCase()
+          message: question.trim(),
+          context: ctx,
+          speed
         })
       });
-      const json = await res.json();
-      if (json && json.ok) {
-        const reply = (json.reply || "").toString();
-        setHistory((h) => [...h, { role: "assistant", content: reply }]);
-        setCitations(Array.isArray(json.citations) ? json.citations : []);
-        setEvidence(Array.isArray(json.evidence) ? json.evidence : []);
-      } else {
-        const err = (json && json.error) || "Chat failed.";
-        setHistory((h) => [...h, { role: "assistant", content: `⚠️ ${err}` }]);
-      }
-    } catch {
-      setHistory((h) => [...h, { role: "assistant", content: "⚠️ Network error." }]);
+      const data = await res.json();
+      if (data?.text) setAnswer(data.text);
+      else setAnswer("Error: no response from chat function.");
+    } catch (err) {
+      setAnswer("Error: could not reach chat function.");
     } finally {
       setBusy(false);
-      inputRef.current?.focus?.();
     }
-  }
-
-  // Clear chat only (keep profile/org info)
-  function handleResetChat() {
-    try {
-      // If you store conversation memory anywhere locally, clear it here:
-      // localStorage.removeItem("lancelot_ctx");  // only if ctx is strictly conversation
-    } catch {}
-    setHistory([]);
-    setCitations([]);
-    setEvidence([]);
-  }
+  };
 
   return (
-    <div style={{ maxWidth: 760, margin: "0 auto", padding: 16 }}>
-      {/* HEADER (keeps your original style; adds Sign Out next to Account) */}
-      <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <h1 style={{ margin: 0, fontSize: 22 }}>Lancelot</h1>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <a href="/account" style={{ textDecoration: "none" }}>
-            <button>Account</button>
-          </a>
-          <a href="/logout" style={{ textDecoration: "none" }}>
-            <button>Sign Out</button>
-          </a>
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: BRAND.primary, color: BRAND.white }}>
+      {/* Header */}
+      <header className="w-full border-b border-white/15">
+        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <div className="text-xl md:text-2xl font-semibold">{BRAND.title}</div>
+            <div className="text-xs opacity-80">{BRAND.tagline}</div>
+          </div>
+
+          {/* RIGHT SIDE: Beta + Account */}
+          <div className="flex items-center gap-3 text-sm">
+            <span className="opacity-70">Beta</span>
+            <a
+              href="/account"
+              className="underline opacity-90 hover:opacity-100 transition"
+              title="View or update your account"
+            >
+              Account
+            </a>
+          </div>
         </div>
       </header>
 
-      {/* CHAT WINDOW */}
-      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, minHeight: 240 }}>
-        {history.length === 0 && (
-          <div style={{ opacity: 0.6 }}>
+      {/* Main */}
+      <main className="flex-grow flex items-center justify-center px-6">
+        <div className="w-full max-w-2xl bg-white text-black rounded-2xl shadow-lg p-6">
+          <h1 className="text-lg font-semibold mb-2 text-center" style={{ color: BRAND.primary }}>
+            {ctx?.firstName ? `Hi ${ctx.firstName}.` : "Hi there."}
+          </h1>
+          <p className="text-sm text-gray-600 mb-4 text-center">
             Ask about enrollment, retention, accreditation, finance, or marketing. I’ll answer with citations.
-          </div>
-        )}
-        {history.map((m, i) => (
-          <div key={i} style={{ marginBottom: 10 }}>
-            <div style={{ fontWeight: "bold" }}>{m.role === "user" ? "You" : "Lancelot"}</div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
-          </div>
-        ))}
-      </section>
+          </p>
 
-      {/* CONTROLS ROW: Speed + Reset Chat (same row) */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 500 }}>Speed:</span>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          {/* Form */}
+          <form onSubmit={handleAsk} className="flex gap-2 mb-4">
             <input
-              type="radio"
-              name="speed"
-              checked={speed === "Normal"}
-              onChange={() => setSpeed("Normal")}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask Lancelot… e.g., ‘How can we improve our online program enrollment?’"
+              className="flex-grow rounded-xl border border-gray-300 px-3 py-2 text-sm"
             />
-            Normal
-          </label>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <input
-              type="radio"
-              name="speed"
-              checked={speed === "Fast"}
-              onChange={() => setSpeed("Fast")}
-            />
-            Fast
-          </label>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl px-4 py-2 text-sm font-medium"
+              style={{
+                backgroundColor: BRAND.accent,
+                color: BRAND.primary,
+                opacity: busy ? 0.6 : 1
+              }}
+            >
+              {busy ? "Thinking…" : "Ask"}
+            </button>
+          </form>
+
+          {/* Speed toggle */}
+          <div className="flex gap-2 text-xs text-gray-700 mb-3">
+            <span className="font-medium">Speed:</span>
+            <button
+              onClick={() => setSpeed("normal")}
+              className={`px-2 py-1 rounded-lg ${speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
+            >
+              Normal
+            </button>
+            <button
+              onClick={() => setSpeed("fast")}
+              className={`px-2 py-1 rounded-lg ${speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
+            >
+              Fast
+            </button>
+          </div>
+
+          {/* Answer box */}
+          <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
+            {answer || "Your answer will appear here."}
+          </div>
         </div>
+      </main>
 
-        <div style={{ marginLeft: "auto" }}>
-          <button type="button" onClick={handleResetChat}>
-            Reset Chat
-          </button>
-        </div>
-      </div>
-
-      {/* INPUT + ASK BUTTON */}
-      <form onSubmit={sendMessage} style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your question…"
-          style={{ flex: 1 }}
-          disabled={busy}
-        />
-        <button disabled={busy || !input.trim()} type="submit">
-          {busy ? "Thinking…" : "Ask"}
-        </button>
-      </form>
-
-      {/* EVIDENCE */}
-      {citations.length > 0 && (
-        <div style={{ marginTop: 16, borderTop: "1px dashed #ccc", paddingTop: 12 }}>
-          <h3 style={{ marginTop: 0 }}>Evidence</h3>
-          <ol>
-            {citations.map((c, idx) => (
-              <li key={c.id || idx}>
-                <div style={{ fontWeight: 500 }}>{c.title || "Untitled"}</div>
-                {c.url && (
-                  <div>
-                    <a href={c.url} target="_blank" rel="noreferrer">
-                      {c.url}
-                    </a>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-
-      {/* DEBUG (optional; keep collapsed) */}
-      {evidence.length > 0 && (
-        <details style={{ marginTop: 8 }}>
-          <summary>Debug: Raw Evidence Payload</summary>
-          <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(evidence, null, 2)}</pre>
-        </details>
-      )}
+      {/* Footer */}
+      <footer className="text-center text-xs py-4 opacity-70">
+        Beta — not legal/financial advice. Sources may include internal summaries and public documents.
+      </footer>
     </div>
   );
 }

@@ -64,7 +64,7 @@ export default function LoginPage() {
     try {
       // Look up the user in your Supabase table: "users"
       const { data, error: qErr } = await supabase
-        .from("Users")
+        .from("users")
         .select("*")
         .ilike("email", emailInput) // case-insensitive
         .limit(1)

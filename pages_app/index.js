@@ -1,5 +1,5 @@
 // ===========================================
-// Lancelot — Chat Interface (Main Page)
+// Lancelot — Chat Interface (Main Page) — Reply & Evidence Fix
 // ===========================================
 
 import { useEffect, useState } from "react";
@@ -18,6 +18,7 @@ const BRAND = {
   tagline: "The trusted assistant for every higher-ed professional."
 };
 
+// Local storage key for user context
 const LS_CTX = "lancelot_ctx";
 
 export default function ChatPage() {
@@ -26,6 +27,7 @@ export default function ChatPage() {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [speed, setSpeed] = useState("normal"); // "normal" or "fast"
+  const [citations, setCitations] = useState([]); // [{ title, source_url }]
 
   // Load local context
   useEffect(() => {
@@ -37,39 +39,47 @@ export default function ChatPage() {
     }
   }, []);
 
-  // --- Ask Lancelot ---
+  // Ask Lancelot
   const handleAsk = async (e) => {
     e.preventDefault?.();
     if (!question.trim()) return;
     setBusy(true);
-    setAnswer("");
+    setCitations([]);
+
     try {
       const res = await fetch("/.netlify/functions/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: question.trim(),
-          context: ctx,
+          ctx,
           speed
         })
       });
       const data = await res.json();
-      if (data?.text) setAnswer(data.text);
-      else setAnswer("Error: no response from chat function.");
-    } catch {
+
+      // Use reply when available (matches restored backend), else fall back to text
+      const replyText =
+        (data && (data.reply || data.text)) ||
+        "Error: no response from chat function.";
+
+      setAnswer(replyText);
+      setCitations(Array.isArray(data?.citations) ? data.citations : []);
+    } catch (err) {
       setAnswer("Error: could not reach chat function.");
+      setCitations([]);
     } finally {
       setBusy(false);
+      // keep question so user can edit; or clear if you prefer:
+      // setQuestion("");
     }
   };
 
-  // --- Reset Chat (clears conversation only) ---
+  // Reset only the chat UI (keep profile/org context intact)
   const handleReset = () => {
-    try {
-      localStorage.removeItem("lancelot_ctx");
-    } catch {}
     setQuestion("");
     setAnswer("");
+    setCitations([]);
   };
 
   return (
@@ -141,17 +151,13 @@ export default function ChatPage() {
               <span className="font-medium">Speed:</span>
               <button
                 onClick={() => setSpeed("normal")}
-                className={`px-2 py-1 rounded-lg ${
-                  speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"
-                }`}
+                className={`px-2 py-1 rounded-lg ${speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
               >
                 Normal
               </button>
               <button
                 onClick={() => setSpeed("fast")}
-                className={`px-2 py-1 rounded-lg ${
-                  speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"
-                }`}
+                className={`px-2 py-1 rounded-lg ${speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
               >
                 Fast
               </button>
@@ -169,6 +175,33 @@ export default function ChatPage() {
           <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
             {answer || "Your answer will appear here."}
           </div>
+
+          {/* Evidence (if any) */}
+          {citations.length > 0 && (
+            <div className="mt-3 text-xs text-gray-700">
+              <div className="font-medium mb-1" style={{ color: BRAND.primary }}>Evidence</div>
+              <ol className="list-decimal pl-4 space-y-1">
+                {citations.map((c, idx) => (
+                  <li key={idx}>
+                    <span className="font-medium">{c.title || "Untitled"}</span>
+                    {c.source_url ? (
+                      <>
+                        {" "}
+                        <a
+                          href={c.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:opacity-80"
+                        >
+                          {c.source_url}
+                        </a>
+                      </>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
         </div>
       </main>
 

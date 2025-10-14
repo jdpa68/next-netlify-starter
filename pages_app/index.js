@@ -1,11 +1,8 @@
-// pages_app/login.js
-// Lancelot Welcome / Sign-In Hub (Step 1a.1)
-// - Keeps existing styling/colors
-// - Shows two clear paths:
-//    • Sign In (Returning User): email field (no magic link here; real sign-in happens in 1a.2)
-//    • Register (New User): link to /register (magic link happens there only)
+// ===========================================
+// Lancelot — Chat Interface (Main Page)
+// ===========================================
 
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -17,174 +14,139 @@ const BRAND = {
   primary: "#040D2C",
   accent: "#C2AA80",
   white: "#FFFFFF",
-  text: "#0f172a",
+  title: "Lancelot",
+  tagline: "The trusted assistant for every higher-ed professional."
 };
 
-export default function LoginPage() {
-  // Keeping simple and familiar: we still check Supabase session only to avoid duplicates,
-  // but we won't send magic links here for returning users.
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
-  const [session, setSession] = useState(null);
+// Local storage key for user context
+const LS_CTX = "lancelot_ctx";
 
+export default function ChatPage() {
+  const [ctx, setCtx] = useState(null);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [speed, setSpeed] = useState("normal"); // "normal" or "fast"
+
+  // Load local context
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data?.session) {
-        setSession(data.session);
-        // NOTE: We are NOT auto-redirecting here in 1a.1.
-        // We keep users on this hub screen until 1a.2 wiring is complete.
-      }
-    });
+    try {
+      const raw = typeof window !== "undefined" && localStorage.getItem(LS_CTX);
+      if (raw) setCtx(JSON.parse(raw));
+    } catch {
+      setCtx(null);
+    }
   }, []);
 
-  function goRegister(e) {
-    e?.preventDefault?.();
-    window.location.href = "/register";
-  }
-
-  function onReturningSubmit(e) {
-    e?.preventDefault?.();
-    setError("");
-    // In 1a.1 we only collect the email and show that this is the returning-user path.
-    // The actual "no-magic-link" sign-in logic (look up user, set local session, redirect) is Step 1a.2.
-    if (!email.trim()) {
-      setError("Please enter your email.");
-      return;
+  const handleAsk = async (e) => {
+    e.preventDefault?.();
+    if (!question.trim()) return;
+    setBusy(true);
+    setAnswer("");
+    try {
+      const res = await fetch("/.netlify/functions/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: question.trim(),
+          context: ctx,
+          speed
+        })
+      });
+      const data = await res.json();
+      if (data?.text) setAnswer(data.text);
+      else setAnswer("Error: no response from chat function.");
+    } catch (err) {
+      setAnswer("Error: could not reach chat function.");
+    } finally {
+      setBusy(false);
     }
-    // Temporary confirmation only (no auth yet). We'll wire real sign-in in 1a.2.
-    alert("Thanks! Returning-user sign-in will be enabled in the next step.\nFor now, use Register (New User) if you are new.");
-  }
+  };
 
   return (
-    <div style={{ minHeight: "100vh", background: BRAND.primary, color: BRAND.white }}>
-      {/* Header – unchanged */}
-      <header style={{ borderBottom: "1px solid rgba(255,255,255,0.15)" }}>
-        <div
-          style={{
-            maxWidth: 960,
-            margin: "0 auto",
-            padding: "16px 20px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 20 }}>Lancelot</div>
-            <span style={{ fontSize: 12, opacity: 0.8 }}>
-              The trusted assistant for every higher-ed professional.
-            </span>
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: BRAND.primary, color: BRAND.white }}>
+      {/* Header */}
+      <header className="w-full border-b border-white/15">
+        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <div className="text-xl md:text-2xl font-semibold">{BRAND.title}</div>
+            <div className="text-xs opacity-80">{BRAND.tagline}</div>
           </div>
-          <span style={{ fontSize: 12, opacity: 0.8 }}>Beta</span>
+
+          {/* RIGHT SIDE: Beta + Account */}
+          <div className="flex items-center gap-3 text-sm">
+            <span className="opacity-70">Beta</span>
+            <a
+              href="/account"
+              className="underline opacity-90 hover:opacity-100 transition"
+              title="View or update your account"
+            >
+              Account
+            </a>
+          </div>
         </div>
       </header>
 
-      {/* Body – same card feel, just two clear paths */}
-      <main style={{ maxWidth: 620, margin: "40px auto", padding: "0 20px" }}>
-        <section
-          style={{
-            background: BRAND.white,
-            color: BRAND.text,
-            border: "1px solid rgba(4,13,44,0.10)",
-            borderRadius: 16,
-            boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
-          }}
-        >
-          <div style={{ padding: 24 }}>
-            <h1 style={{ margin: 0, fontSize: 22, color: BRAND.primary }}>Welcome</h1>
-            <p style={{ marginTop: 6, fontSize: 14, opacity: 0.8 }}>
-              Choose an option below.
-            </p>
+      {/* Main */}
+      <main className="flex-grow flex items-center justify-center px-6">
+        <div className="w-full max-w-2xl bg-white text-black rounded-2xl shadow-lg p-6">
+          <h1 className="text-lg font-semibold mb-2 text-center" style={{ color: BRAND.primary }}>
+            {ctx?.firstName ? `Hi ${ctx.firstName}.` : "Hi there."}
+          </h1>
+          <p className="text-sm text-gray-600 mb-4 text-center">
+            Ask about enrollment, retention, accreditation, finance, or marketing. I’ll answer with citations.
+          </p>
 
-            {/* Returning user path (no magic link) */}
-            <div
+          {/* Form */}
+          <form onSubmit={handleAsk} className="flex gap-2 mb-4">
+            <input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask Lancelot… e.g., ‘How can we improve our online program enrollment?’"
+              className="flex-grow rounded-xl border border-gray-300 px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl px-4 py-2 text-sm font-medium"
               style={{
-                padding: 16,
-                borderRadius: 12,
-                border: "1px solid rgba(4,13,44,0.10)",
-                marginTop: 16,
+                backgroundColor: BRAND.accent,
+                color: BRAND.primary,
+                opacity: busy ? 0.6 : 1
               }}
             >
-              <h2 style={{ margin: 0, fontSize: 16, color: BRAND.primary }}>
-                Sign In (Returning User)
-              </h2>
-              <form onSubmit={onReturningSubmit} style={{ display: "grid", gap: 12, marginTop: 12 }}>
-                <label style={{ fontSize: 14, fontWeight: 500 }}>Enter your email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Enter your email"
-                  required
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 12,
-                    border: "1px solid rgba(4,13,44,0.20)",
-                    outline: "none",
-                  }}
-                />
-                <button
-                  type="submit"
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 12,
-                    border: "1px solid rgba(4,13,44,0.08)",
-                    background: BRAND.accent,
-                    color: BRAND.primary,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
-                >
-                  Sign In
-                </button>
-                {error && <div style={{ color: "#b91c1c", fontSize: 13 }}>{error}</div>}
-              </form>
-            </div>
+              {busy ? "Thinking…" : "Ask"}
+            </button>
+          </form>
 
-            {/* New user registration path (magic link only here) */}
-            <div
-              style={{
-                padding: 16,
-                borderRadius: 12,
-                border: "1px solid rgba(4,13,44,0.10)",
-                marginTop: 16,
-              }}
+          {/* Speed toggle */}
+          <div className="flex gap-2 text-xs text-gray-700 mb-3">
+            <span className="font-medium">Speed:</span>
+            <button
+              onClick={() => setSpeed("normal")}
+              className={`px-2 py-1 rounded-lg ${speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
             >
-              <h2 style={{ margin: 0, fontSize: 16, color: BRAND.primary }}>
-                New user? Create your profile
-              </h2>
-              <p style={{ marginTop: 6, fontSize: 14, opacity: 0.8 }}>
-                We’ll verify your email just once during registration.
-              </p>
-              <button
-                onClick={goRegister}
-                style={{
-                  padding: "12px 14px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(4,13,44,0.08)",
-                  background: BRAND.white,
-                  color: BRAND.primary,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Go to Registration
-              </button>
-            </div>
-
-            {/* Optional note */}
-            {session && (
-              <div style={{ marginTop: 14, fontSize: 12, opacity: 0.75 }}>
-                You appear to be signed in already. (We’ll wire auto-redirect after Step 1a.2.)
-              </div>
-            )}
+              Normal
+            </button>
+            <button
+              onClick={() => setSpeed("fast")}
+              className={`px-2 py-1 rounded-lg ${speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
+            >
+              Fast
+            </button>
           </div>
-        </section>
 
-        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
-          Having trouble? Email support@peerquest.ai
+          {/* Answer box */}
+          <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
+            {answer || "Your answer will appear here."}
+          </div>
         </div>
       </main>
+
+      {/* Footer */}
+      <footer className="text-center text-xs py-4 opacity-70">
+        Beta — not legal/financial advice. Sources may include internal summaries and public documents.
+      </footer>
     </div>
   );
 }

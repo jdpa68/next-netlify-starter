@@ -1,5 +1,10 @@
 // pages_app/login.js
-// Polished Lancelot Sign-In Page using Supabase Auth
+// Lancelot Welcome / Sign-In Hub (Step 1a.1)
+// - Keeps existing styling/colors
+// - Shows two clear paths:
+//    • Sign In (Returning User): email field (no magic link here; real sign-in happens in 1a.2)
+//    • Register (New User): link to /register (magic link happens there only)
+
 import React, { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -16,8 +21,9 @@ const BRAND = {
 };
 
 export default function LoginPage() {
+  // Keeping simple and familiar: we still check Supabase session only to avoid duplicates,
+  // but we won't send magic links here for returning users.
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [session, setSession] = useState(null);
 
@@ -25,42 +31,33 @@ export default function LoginPage() {
     supabase.auth.getSession().then(({ data }) => {
       if (data?.session) {
         setSession(data.session);
-        window.location.replace("/");
+        // NOTE: We are NOT auto-redirecting here in 1a.1.
+        // We keep users on this hub screen until 1a.2 wiring is complete.
       }
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => {
-      if (s) {
-        setSession(s);
-        window.location.replace("/");
-      }
-    });
-    return () => listener.subscription.unsubscribe();
   }, []);
 
-  async function sendLink(e) {
+  function goRegister(e) {
     e?.preventDefault?.();
-    setError("");
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: { emailRedirectTo: "https://pqlancelot.netlify.app/" },
-      });
-      if (error) throw error;
-      setSent(true);
-    } catch (err) {
-      setError(err.message || "Unable to send link.");
-    }
+    window.location.href = "/register";
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    setSession(null);
-    window.location.reload();
+  function onReturningSubmit(e) {
+    e?.preventDefault?.();
+    setError("");
+    // In 1a.1 we only collect the email and show that this is the returning-user path.
+    // The actual "no-magic-link" sign-in logic (look up user, set local session, redirect) is Step 1a.2.
+    if (!email.trim()) {
+      setError("Please enter your email.");
+      return;
+    }
+    // Temporary confirmation only (no auth yet). We'll wire real sign-in in 1a.2.
+    alert("Thanks! Returning-user sign-in will be enabled in the next step.\nFor now, use Register (New User) if you are new.");
   }
 
   return (
     <div style={{ minHeight: "100vh", background: BRAND.primary, color: BRAND.white }}>
-      {/* Header */}
+      {/* Header – unchanged */}
       <header style={{ borderBottom: "1px solid rgba(255,255,255,0.15)" }}>
         <div
           style={{
@@ -82,8 +79,8 @@ export default function LoginPage() {
         </div>
       </header>
 
-      {/* Body */}
-      <main style={{ maxWidth: 520, margin: "40px auto", padding: "0 20px" }}>
+      {/* Body – same card feel, just two clear paths */}
+      <main style={{ maxWidth: 620, margin: "40px auto", padding: "0 20px" }}>
         <section
           style={{
             background: BRAND.white,
@@ -94,13 +91,24 @@ export default function LoginPage() {
           }}
         >
           <div style={{ padding: 24 }}>
-            <h1 style={{ margin: 0, fontSize: 22, color: BRAND.primary }}>Sign in</h1>
+            <h1 style={{ margin: 0, fontSize: 22, color: BRAND.primary }}>Welcome</h1>
             <p style={{ marginTop: 6, fontSize: 14, opacity: 0.8 }}>
-              Enter your email and we’ll send a secure sign-in link. No password required.
+              Choose an option below.
             </p>
 
-            {!session && !sent && (
-              <form onSubmit={sendLink} style={{ display: "grid", gap: 12, marginTop: 18 }}>
+            {/* Returning user path (no magic link) */}
+            <div
+              style={{
+                padding: 16,
+                borderRadius: 12,
+                border: "1px solid rgba(4,13,44,0.10)",
+                marginTop: 16,
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: 16, color: BRAND.primary }}>
+                Sign In (Returning User)
+              </h2>
+              <form onSubmit={onReturningSubmit} style={{ display: "grid", gap: 12, marginTop: 12 }}>
                 <label style={{ fontSize: 14, fontWeight: 500 }}>Enter your email</label>
                 <input
                   type="email"
@@ -127,42 +135,54 @@ export default function LoginPage() {
                     cursor: "pointer",
                   }}
                 >
-                  Send sign-in link
+                  Sign In
                 </button>
                 {error && <div style={{ color: "#b91c1c", fontSize: 13 }}>{error}</div>}
               </form>
-            )}
+            </div>
 
-            {sent && (
-              <div style={{ marginTop: 18, fontSize: 14 }}>
-                <div style={{ color: "#065f46" }}>✅ Check your email for the magic link.</div>
-                <div>This page will redirect automatically after you click it.</div>
-              </div>
-            )}
+            {/* New user registration path (magic link only here) */}
+            <div
+              style={{
+                padding: 16,
+                borderRadius: 12,
+                border: "1px solid rgba(4,13,44,0.10)",
+                marginTop: 16,
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: 16, color: BRAND.primary }}>
+                New user? Create your profile
+              </h2>
+              <p style={{ marginTop: 6, fontSize: 14, opacity: 0.8 }}>
+                We’ll verify your email just once during registration.
+              </p>
+              <button
+                onClick={goRegister}
+                style={{
+                  padding: "12px 14px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(4,13,44,0.08)",
+                  background: BRAND.white,
+                  color: BRAND.primary,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Go to Registration
+              </button>
+            </div>
 
+            {/* Optional note */}
             {session && (
-              <div style={{ marginTop: 18 }}>
-                <div>You are already signed in.</div>
-                <button
-                  onClick={signOut}
-                  style={{
-                    marginTop: 10,
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #ddd",
-                    background: "#f2f2f2",
-                    cursor: "pointer",
-                  }}
-                >
-                  Sign out
-                </button>
+              <div style={{ marginTop: 14, fontSize: 12, opacity: 0.75 }}>
+                You appear to be signed in already. (We’ll wire auto-redirect after Step 1a.2.)
               </div>
             )}
           </div>
         </section>
 
         <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
-          Having trouble? Email jdunn@pqrecruiting.com
+          Having trouble? Email support@peerquest.ai
         </div>
       </main>
     </div>

@@ -1,8 +1,8 @@
 // ===========================================
-// Lancelot — Chat Interface (Main Page) — Reply & Evidence Fix
+// Lancelot — Chat Interface (Main Page) — Double Input + Auto‑Focus
 // ===========================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -18,7 +18,6 @@ const BRAND = {
   tagline: "The trusted assistant for every higher-ed professional."
 };
 
-// Local storage key for user context
 const LS_CTX = "lancelot_ctx";
 
 export default function ChatPage() {
@@ -26,8 +25,10 @@ export default function ChatPage() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
-  const [speed, setSpeed] = useState("normal"); // "normal" or "fast"
-  const [citations, setCitations] = useState([]); // [{ title, source_url }]
+  const [speed, setSpeed] = useState("normal");
+  const [citations, setCitations] = useState([]);
+  const topInputRef = useRef(null);
+  const bottomInputRef = useRef(null);
 
   // Load local context
   useEffect(() => {
@@ -37,49 +38,48 @@ export default function ChatPage() {
     } catch {
       setCtx(null);
     }
+    // initial focus
+    setTimeout(() => topInputRef.current?.focus?.(), 0);
   }, []);
 
-  // Ask Lancelot
+  // refocus after each reply
+  useEffect(() => {
+    if (!busy && (answer || citations.length >= 0)) {
+      setTimeout(() => bottomInputRef.current?.focus?.(), 0);
+    }
+  }, [busy, answer, citations.length]);
+
   const handleAsk = async (e) => {
-    e.preventDefault?.();
-    if (!question.trim()) return;
+    e?.preventDefault?.();
+    const q = question.trim();
+    if (!q) return;
     setBusy(true);
     setCitations([]);
-
     try {
       const res = await fetch("/.netlify/functions/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: question.trim(),
-          ctx,
-          speed
-        })
+        body: JSON.stringify({ message: q, ctx, speed })
       });
       const data = await res.json();
-
-      // Use reply when available (matches restored backend), else fall back to text
-      const replyText =
-        (data && (data.reply || data.text)) ||
-        "Error: no response from chat function.";
-
+      const replyText = (data && (data.reply || data.text)) || "Error: no response from chat function.";
       setAnswer(replyText);
       setCitations(Array.isArray(data?.citations) ? data.citations : []);
-    } catch (err) {
+    } catch {
       setAnswer("Error: could not reach chat function.");
       setCitations([]);
     } finally {
       setBusy(false);
-      // keep question so user can edit; or clear if you prefer:
+      // keep the question so user can tweak; comment next line to clear instead
       // setQuestion("");
     }
   };
 
-  // Reset only the chat UI (keep profile/org context intact)
   const handleReset = () => {
     setQuestion("");
     setAnswer("");
     setCitations([]);
+    setTimeout(() => topInputRef.current?.focus?.(), 0);
   };
 
   return (
@@ -91,24 +91,10 @@ export default function ChatPage() {
             <div className="text-xl md:text-2xl font-semibold">{BRAND.title}</div>
             <div className="text-xs opacity-80">{BRAND.tagline}</div>
           </div>
-
-          {/* RIGHT SIDE: Beta + Account + Sign Out */}
           <div className="flex items-center gap-3 text-sm">
             <span className="opacity-70">Beta</span>
-            <a
-              href="/account"
-              className="underline opacity-90 hover:opacity-100 transition"
-              title="View or update your account"
-            >
-              Account
-            </a>
-            <a
-              href="/logout"
-              className="underline opacity-90 hover:opacity-100 transition"
-              title="Sign out of your session"
-            >
-              Sign Out
-            </a>
+            <a href="/account" className="underline opacity-90 hover:opacity-100 transition">Account</a>
+            <a href="/logout" className="underline opacity-90 hover:opacity-100 transition">Sign Out</a>
           </div>
         </div>
       </header>
@@ -123,9 +109,10 @@ export default function ChatPage() {
             Ask about enrollment, retention, accreditation, finance, or marketing. I’ll answer with citations.
           </p>
 
-          {/* Form */}
+          {/* Top input form */}
           <form onSubmit={handleAsk} className="flex gap-2 mb-4">
             <input
+              ref={topInputRef}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="Ask Lancelot… e.g., ‘How can we improve our online program enrollment?’"
@@ -135,17 +122,13 @@ export default function ChatPage() {
               type="submit"
               disabled={busy}
               className="rounded-xl px-4 py-2 text-sm font-medium"
-              style={{
-                backgroundColor: BRAND.accent,
-                color: BRAND.primary,
-                opacity: busy ? 0.6 : 1
-              }}
+              style={{ backgroundColor: BRAND.accent, color: BRAND.primary, opacity: busy ? 0.6 : 1 }}
             >
               {busy ? "Thinking…" : "Ask"}
             </button>
           </form>
 
-          {/* Speed + Reset row */}
+          {/* Speed + Reset */}
           <div className="flex items-center justify-between text-xs text-gray-700 mb-3">
             <div className="flex gap-2 items-center">
               <span className="font-medium">Speed:</span>
@@ -162,21 +145,17 @@ export default function ChatPage() {
                 Fast
               </button>
             </div>
-            <button
-              onClick={handleReset}
-              className="text-xs underline hover:opacity-80 transition"
-              style={{ color: BRAND.primary }}
-            >
+            <button onClick={handleReset} className="text-xs underline hover:opacity-80 transition" style={{ color: BRAND.primary }}>
               Reset Chat
             </button>
           </div>
 
-          {/* Answer box */}
+          {/* Answer */}
           <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-800 min-h-[150px]">
             {answer || "Your answer will appear here."}
           </div>
 
-          {/* Evidence (if any) */}
+          {/* Evidence */}
           {citations.length > 0 && (
             <div className="mt-3 text-xs text-gray-700">
               <div className="font-medium mb-1" style={{ color: BRAND.primary }}>Evidence</div>
@@ -187,12 +166,7 @@ export default function ChatPage() {
                     {c.source_url ? (
                       <>
                         {" "}
-                        <a
-                          href={c.source_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline hover:opacity-80"
-                        >
+                        <a href={c.source_url} target="_blank" rel="noreferrer" className="underline hover:opacity-80">
                           {c.source_url}
                         </a>
                       </>
@@ -202,10 +176,28 @@ export default function ChatPage() {
               </ol>
             </div>
           )}
+
+          {/* Bottom input form (keeps the conversation flowing) */}
+          <form onSubmit={handleAsk} className="flex gap-2 mt-4">
+            <input
+              ref={bottomInputRef}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask another question…"
+              className="flex-grow rounded-xl border border-gray-300 px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl px-4 py-2 text-sm font-medium"
+              style={{ backgroundColor: BRAND.accent, color: BRAND.primary, opacity: busy ? 0.6 : 1 }}
+            >
+              {busy ? "Thinking…" : "Ask"}
+            </button>
+          </form>
         </div>
       </main>
 
-      {/* Footer */}
       <footer className="text-center text-xs py-4 opacity-70">
         Beta — not legal/financial advice. Sources may include internal summaries and public documents.
       </footer>

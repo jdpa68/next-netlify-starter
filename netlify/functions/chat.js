@@ -63,7 +63,11 @@ exports.handler = async (event) => {
     const focusTag = ctx.pref_area || inferFocus(message);
     let kbResults = [];
     try {
-      const kbRes = await fetchWithTimeout(`${process.env.URL || ""}/.netlify/functions/knowledge-search`, {
+    // Build internal base URL from headers (Netlify-safe)
+    const host = event.headers["x-forwarded-host"] || event.headers.host;
+    const proto = event.headers["x-forwarded-proto"] || "https";
+    const base = `${proto}://${host}`;
+    const kbRes = await fetchWithTimeout(`${base}/.netlify/functions/knowledge-search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ q: message, pref_area: focusTag, limit: 5 })

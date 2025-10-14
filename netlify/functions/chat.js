@@ -1,6 +1,5 @@
 // netlify/functions/chat.js
-// POSTs to knowledge-search, injects KB snippets, returns reply + citations
-
+// POSTs to knowledge-search, injects KB snippets, returns reply + citations + KB count
 const { createClient } = require("@supabase/supabase-js");
 const MODEL = "gpt-4o-mini";
 
@@ -21,12 +20,12 @@ exports.handler = async (event) => {
       const msg = "Missing environment variables.";
       return ok({ reply: msg, text: msg, citations: [], sessionId: null });
     }
+
     const body = JSON.parse(event.body || "{}");
     const message = String(body.message || "").trim();
     const ctx = body.ctx || {};
     if (!message) return ok({ reply: "Please share your question.", text: "Please share your question.", citations: [], sessionId: null });
 
-    // Build site base from headers (works on Netlify)
     const host  = event.headers["x-forwarded-host"]  || event.headers.host;
     const proto = event.headers["x-forwarded-proto"] || "https";
     const base  = `${proto}://${host}`;
@@ -43,12 +42,12 @@ exports.handler = async (event) => {
       kbResults = Array.isArray(j?.results) ? j.results : [];
     }catch{ kbResults = []; }
 
+    const KB_HITS = kbResults.length;
     const citations = kbResults.map(r => ({ title: r.title, source_url: r.source_url }));
-    const evidenceText = kbResults.length
+    const evidenceText = KB_HITS
       ? kbResults.map((r,i)=>`${i+1}. ${r.title || "Untitled"} — ${r.summary || ""}`).join("\n")
       : "(No KB matches returned; avoid guessing and ask one clarifying question.)";
 
-    // ---- Consultant voice (concise) ----
     const who = ctx.firstName ? `Hi ${ctx.firstName}.` : "Hi there.";
     const persona = `
 You are Lancelot, a higher-ed consultant.
@@ -58,7 +57,6 @@ If KB snippets are present, ground advice in them.
 Plain text only.
 `;
 
-    // ---- Model call ----
     let reply = "";
     try{
       const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
@@ -80,8 +78,10 @@ Plain text only.
       reply = "I had trouble generating a response just now.";
     }
 
-    // Return (UI reads .text)
-    return ok({ reply, text: reply, citations, sessionId: null });
+    // --- Add debug line for KB hit count ---
+    const finalReply = `${reply}\n\n(KB hits: ${KB_HITS})`;
+
+    return ok({ reply: finalReply, text: finalReply, citations, sessionId: null });
   }catch{
     const msg = "Unexpected error in chat function.";
     return ok({ reply: msg, text: msg, citations: [], sessionId: null });

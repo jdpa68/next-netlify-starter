@@ -1,6 +1,6 @@
 // pages_app/login.js
 // Lancelot Welcome / Sign-In Hub (Step 1a.2)
-// • Returning user: look up email in Supabase table "Users" (no magic link)
+// • Returning user: look up email in Supabase table "users" (no magic link)
 // • New user: go to /register (magic link happens there only)
 
 import React, { useEffect, useState } from "react";
@@ -62,7 +62,7 @@ export default function LoginPage() {
     }
     setBusy(true);
     try {
-      // Look up the user in your Supabase table: "Users"
+      // Look up the user in your Supabase table: "users"
       const { data, error: qErr } = await supabase
         .from("Users")
         .select("*")
@@ -230,7 +230,7 @@ export default function LoginPage() {
         </section>
 
         <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
-          Having trouble? Email support@peerquest.ai
+          Having trouble? Email jdunn@peerquest.org
         </div>
       </main>
     </div>

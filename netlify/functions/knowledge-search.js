@@ -1,6 +1,5 @@
 // netlify/functions/knowledge-search.js
-// Searches the KB view and returns concise results for chat.js
-// Expects POST JSON: { q?: string, pref_area?: string, limit?: number }
+// Expanded search — now includes author/creator/tags for dissertation and name lookups.
 
 const { createClient } = require("@supabase/supabase-js");
 
@@ -12,7 +11,7 @@ exports.handler = async (event) => {
 
     // ---- Supabase (service role key required to read secured views) ----
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!supabaseUrl || !serviceKey) {
       return json(200, { ok: false, error: "Missing Supabase env vars." });
     }
@@ -37,7 +36,10 @@ exports.handler = async (event) => {
           "area_secondary",
           "issue_primary",
           "issue_secondary",
-          "tags"
+          "tags",
+          "author",
+          "creator",
+          "contributors"
         ].join(",")
       )
       .limit(limit);
@@ -49,10 +51,18 @@ exports.handler = async (event) => {
       );
     }
 
-    // Keyword search across title + summary
+    // ---- Keyword search across multiple fields ----
     if (q && q.length >= 2) {
+      const clean = escapeLike(q);
       query = query.or(
-        `title.ilike.%${escapeLike(q)}%,summary.ilike.%${escapeLike(q)}%`
+        [
+          `title.ilike.%${clean}%`,
+          `summary.ilike.%${clean}%`,
+          `tags.ilike.%${clean}%`,
+          `author.ilike.%${clean}%`,
+          `creator.ilike.%${clean}%`,
+          `contributors.ilike.%${clean}%`
+        ].join(",")
       );
     }
 
@@ -81,7 +91,11 @@ function json(statusCode, payload) {
   };
 }
 function safeJson(s) {
-  try { return JSON.parse(s || "{}"); } catch { return {}; }
+  try {
+    return JSON.parse(s || "{}");
+  } catch {
+    return {};
+  }
 }
 function escapeLike(s) {
   return s.replace(/[%_]/g, (m) => "\\" + m);

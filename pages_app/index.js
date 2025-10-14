@@ -18,7 +18,6 @@ const BRAND = {
   tagline: "The trusted assistant for every higher-ed professional."
 };
 
-// Local storage key for user context
 const LS_CTX = "lancelot_ctx";
 
 export default function ChatPage() {
@@ -38,6 +37,7 @@ export default function ChatPage() {
     }
   }, []);
 
+  // --- Ask Lancelot ---
   const handleAsk = async (e) => {
     e.preventDefault?.();
     if (!question.trim()) return;
@@ -56,11 +56,20 @@ export default function ChatPage() {
       const data = await res.json();
       if (data?.text) setAnswer(data.text);
       else setAnswer("Error: no response from chat function.");
-    } catch (err) {
+    } catch {
       setAnswer("Error: could not reach chat function.");
     } finally {
       setBusy(false);
     }
+  };
+
+  // --- Reset Chat (clears conversation only) ---
+  const handleReset = () => {
+    try {
+      localStorage.removeItem("lancelot_ctx");
+    } catch {}
+    setQuestion("");
+    setAnswer("");
   };
 
   return (
@@ -73,7 +82,7 @@ export default function ChatPage() {
             <div className="text-xs opacity-80">{BRAND.tagline}</div>
           </div>
 
-          {/* RIGHT SIDE: Beta + Account */}
+          {/* RIGHT SIDE: Beta + Account + Sign Out */}
           <div className="flex items-center gap-3 text-sm">
             <span className="opacity-70">Beta</span>
             <a
@@ -82,6 +91,13 @@ export default function ChatPage() {
               title="View or update your account"
             >
               Account
+            </a>
+            <a
+              href="/logout"
+              className="underline opacity-90 hover:opacity-100 transition"
+              title="Sign out of your session"
+            >
+              Sign Out
             </a>
           </div>
         </div>
@@ -119,20 +135,33 @@ export default function ChatPage() {
             </button>
           </form>
 
-          {/* Speed toggle */}
-          <div className="flex gap-2 text-xs text-gray-700 mb-3">
-            <span className="font-medium">Speed:</span>
+          {/* Speed + Reset row */}
+          <div className="flex items-center justify-between text-xs text-gray-700 mb-3">
+            <div className="flex gap-2 items-center">
+              <span className="font-medium">Speed:</span>
+              <button
+                onClick={() => setSpeed("normal")}
+                className={`px-2 py-1 rounded-lg ${
+                  speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"
+                }`}
+              >
+                Normal
+              </button>
+              <button
+                onClick={() => setSpeed("fast")}
+                className={`px-2 py-1 rounded-lg ${
+                  speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"
+                }`}
+              >
+                Fast
+              </button>
+            </div>
             <button
-              onClick={() => setSpeed("normal")}
-              className={`px-2 py-1 rounded-lg ${speed === "normal" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
+              onClick={handleReset}
+              className="text-xs underline hover:opacity-80 transition"
+              style={{ color: BRAND.primary }}
             >
-              Normal
-            </button>
-            <button
-              onClick={() => setSpeed("fast")}
-              className={`px-2 py-1 rounded-lg ${speed === "fast" ? "bg-gray-200 font-medium" : "bg-transparent"}`}
-            >
-              Fast
+              Reset Chat
             </button>
           </div>
 

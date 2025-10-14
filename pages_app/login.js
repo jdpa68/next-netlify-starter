@@ -1,9 +1,7 @@
 // pages_app/login.js
-// Lancelot Welcome / Sign-In Hub (Step 1a.1)
-// - Keeps existing styling/colors
-// - Shows two clear paths:
-//    • Sign In (Returning User): email field (no magic link here; real sign-in happens in 1a.2)
-//    • Register (New User): link to /register (magic link happens there only)
+// Lancelot Welcome / Sign-In Hub (Step 1a.2)
+// • Returning user: look up email in Supabase table "Users" (no magic link)
+// • New user: go to /register (magic link happens there only)
 
 import React, { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
@@ -20,20 +18,31 @@ const BRAND = {
   text: "#0f172a",
 };
 
+// helpers
+function firstNameFrom(full) {
+  const s = String(full || "").trim();
+  if (!s) return "";
+  return s.split(/\s+/)[0];
+}
+function saveCtx(ctx) {
+  try { localStorage.setItem("lancelot_ctx", JSON.stringify(ctx || {})); } catch {}
+}
+function newSessionId() {
+  // light session id for chat continuity
+  try { return (crypto && crypto.randomUUID && crypto.randomUUID()) || String(Date.now()); }
+  catch { return String(Date.now()); }
+}
+
 export default function LoginPage() {
-  // Keeping simple and familiar: we still check Supabase session only to avoid duplicates,
-  // but we won't send magic links here for returning users.
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [session, setSession] = useState(null);
 
   useEffect(() => {
+    // If you’re already signed in via Supabase, just note it (no auto-redirect here).
     supabase.auth.getSession().then(({ data }) => {
-      if (data?.session) {
-        setSession(data.session);
-        // NOTE: We are NOT auto-redirecting here in 1a.1.
-        // We keep users on this hub screen until 1a.2 wiring is complete.
-      }
+      if (data?.session) setSession(data.session);
     });
   }, []);
 
@@ -42,17 +51,55 @@ export default function LoginPage() {
     window.location.href = "/register";
   }
 
-  function onReturningSubmit(e) {
+  // --- RETURNING USER SIGN-IN (no magic email) ---
+  async function onReturningSubmit(e) {
     e?.preventDefault?.();
     setError("");
-    // In 1a.1 we only collect the email and show that this is the returning-user path.
-    // The actual "no-magic-link" sign-in logic (look up user, set local session, redirect) is Step 1a.2.
-    if (!email.trim()) {
+    const emailInput = email.trim().toLowerCase();
+    if (!emailInput) {
       setError("Please enter your email.");
       return;
     }
-    // Temporary confirmation only (no auth yet). We'll wire real sign-in in 1a.2.
-    alert("Thanks! Returning-user sign-in will be enabled in the next step.\nFor now, use Register (New User) if you are new.");
+    setBusy(true);
+    try {
+      // Look up the user in your Supabase table: "Users"
+      const { data, error: qErr } = await supabase
+        .from("Users")
+        .select("*")
+        .ilike("email", emailInput) // case-insensitive
+        .limit(1)
+        .maybeSingle();
+
+      if (qErr) throw qErr;
+
+      if (!data) {
+        setError("We couldn’t find that email. Please register first.");
+        return;
+      }
+
+      // Build lightweight app session (no Supabase Auth token required)
+      const fullName =
+        data.full_name || data.name || data.display_name || "";
+      const institutionName =
+        data.school_name || data.org_name || data.institution || "";
+      const ctx = {
+        firstName: firstNameFrom(fullName) || firstNameFrom(emailInput),
+        email: data.email || emailInput,
+        institutionName,
+        unit_id: data.unit_id || null,
+        org_type: data.org_type || null
+      };
+      saveCtx(ctx);
+
+      try { localStorage.setItem("lancelot_session", newSessionId()); } catch {}
+
+      // Go to chat
+      window.location.replace("/");
+    } catch (err) {
+      setError(err.message || "Unable to sign in right now.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -79,7 +126,7 @@ export default function LoginPage() {
         </div>
       </header>
 
-      {/* Body – same card feel, just two clear paths */}
+      {/* Body – same card feel, two clear paths */}
       <main style={{ maxWidth: 620, margin: "40px auto", padding: "0 20px" }}>
         <section
           style={{
@@ -125,6 +172,7 @@ export default function LoginPage() {
                 />
                 <button
                   type="submit"
+                  disabled={busy}
                   style={{
                     padding: "12px 14px",
                     borderRadius: 12,
@@ -133,9 +181,10 @@ export default function LoginPage() {
                     color: BRAND.primary,
                     fontWeight: 600,
                     cursor: "pointer",
+                    opacity: busy ? 0.7 : 1
                   }}
                 >
-                  Sign In
+                  {busy ? "Signing in…" : "Sign In"}
                 </button>
                 {error && <div style={{ color: "#b91c1c", fontSize: 13 }}>{error}</div>}
               </form>
@@ -154,7 +203,7 @@ export default function LoginPage() {
                 New user? Create your profile
               </h2>
               <p style={{ marginTop: 6, fontSize: 14, opacity: 0.8 }}>
-                We’ll verify your email just once during registration.
+                We’ll verify your email once during registration.
               </p>
               <button
                 onClick={goRegister}
@@ -172,10 +221,9 @@ export default function LoginPage() {
               </button>
             </div>
 
-            {/* Optional note */}
             {session && (
               <div style={{ marginTop: 14, fontSize: 12, opacity: 0.75 }}>
-                You appear to be signed in already. (We’ll wire auto-redirect after Step 1a.2.)
+                You’re already signed in on this browser.
               </div>
             )}
           </div>
